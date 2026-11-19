@@ -13,8 +13,8 @@ namespace Dynarmic::Backend::Arm64 {
 
 using namespace oaknut::util;
 
-FpsrManager::FpsrManager(oaknut::CodeGenerator& code, size_t state_fpsr_offset)
-        : code{code}, state_fpsr_offset{state_fpsr_offset} {}
+FpsrManager::FpsrManager(oaknut::CodeGenerator& code, size_t state_fpsr_offset, bool ignore_exception_flags)
+        : code{code}, state_fpsr_offset{state_fpsr_offset}, ignore_exception_flags{ignore_exception_flags} {}
 
 void FpsrManager::Spill() {
     if (!fpsr_loaded)
@@ -29,7 +29,9 @@ void FpsrManager::Spill() {
 }
 
 void FpsrManager::Load() {
-    if (fpsr_loaded)
+    // Unsafe_IgnoreFPExceptionFlags: leave the host FPSR alone and never
+    // accumulate it, so guest FPSCR exception/QC bits read as zero.
+    if (fpsr_loaded || ignore_exception_flags)
         return;
 
     code.MSR(oaknut::SystemReg::FPSR, XZR);

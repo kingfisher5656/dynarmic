@@ -49,6 +49,10 @@ enum class OptimizationFlag : std::uint32_t {
     /// result in unexpected behaviour in multithreaded scenarios, including but not limited
     /// to data races and deadlocks.
     Unsafe_IgnoreGlobalMonitor = 0x00100000,
+    /// This is an UNSAFE optimization that stops tracking cumulative floating-point exception
+    /// flags (and the saturation flag QC). Guest reads of those FPSCR bits always see zero.
+    /// arm64 backend only: saves an FPSR write and read in every block that uses floating point.
+    Unsafe_IgnoreFPExceptionFlags = 0x00200000,
 };
 
 constexpr OptimizationFlag no_optimizations = static_cast<OptimizationFlag>(0);

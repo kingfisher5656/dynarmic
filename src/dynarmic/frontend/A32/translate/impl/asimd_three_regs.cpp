@@ -919,6 +919,50 @@ bool TranslatorVisitor::asimd_VABDL(bool U, bool D, size_t sz, size_t Vn, size_t
     return AbsoluteDifferenceLong(*this, U, D, sz, Vn, Vd, N, M, Vm, AccumulateBehavior::None);
 }
 
+namespace {
+// Dd = high halves of (Qn +/- Qm), optionally rounded (VRADDHN/VRSUBHN).
+bool HighNarrowing(TranslatorVisitor& v, bool R, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm, bool subtract) {
+    if (sz == 0b11) {
+        return v.DecodeError();
+    }
+
+    if (mcl::bit::get_bit<0>(Vn) || mcl::bit::get_bit<0>(Vm)) {
+        return v.UndefinedInstruction();
+    }
+
+    const size_t esize = 8U << sz;
+    const size_t wide_esize = esize * 2;
+    const auto d = ToVector(false, Vd, D);
+    const auto n = ToVector(true, Vn, N);
+    const auto m = ToVector(true, Vm, M);
+
+    const auto reg_n = v.ir.GetVector(n);
+    const auto reg_m = v.ir.GetVector(m);
+    IR::U128 wide = subtract ? v.ir.VectorSub(wide_esize, reg_n, reg_m)
+                             : v.ir.VectorAdd(wide_esize, reg_n, reg_m);
+    if (R) {
+        const u64 round = u64(1) << (esize - 1);
+        const IR::UAny round_value = wide_esize == 16 ? IR::UAny{v.ir.Imm16(static_cast<u16>(round))}
+                                   : wide_esize == 32 ? IR::UAny{v.ir.Imm32(static_cast<u32>(round))}
+                                                      : IR::UAny{v.ir.Imm64(round)};
+        wide = v.ir.VectorAdd(wide_esize, wide, v.ir.VectorBroadcast(wide_esize, round_value));
+    }
+    const auto result = v.ir.VectorNarrow(wide_esize,
+                                          v.ir.VectorLogicalShiftRight(wide_esize, wide, static_cast<u8>(esize)));
+
+    v.ir.SetVector(d, result);
+    return true;
+}
+}  // Anonymous namespace
+
+bool TranslatorVisitor::asimd_VADDHN(bool R, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm) {
+    return HighNarrowing(*this, R, D, sz, Vn, Vd, N, M, Vm, false);
+}
+
+bool TranslatorVisitor::asimd_VSUBHN(bool R, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm) {
+    return HighNarrowing(*this, R, D, sz, Vn, Vd, N, M, Vm, true);
+}
+
 bool TranslatorVisitor::asimd_VMLAL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool op, bool N, bool M, size_t Vm) {
     const size_t esize = 8U << sz;
 
@@ -965,6 +1009,50 @@ bool TranslatorVisitor::asimd_VMULL(bool U, bool D, size_t sz, size_t Vn, size_t
     const auto result = P ? ir.VectorPolynomialMultiplyLong(esize, reg_n, reg_m)
                       : U ? ir.VectorMultiplyUnsignedWiden(esize, reg_n, reg_m)
                           : ir.VectorMultiplySignedWiden(esize, reg_n, reg_m);
+
+    ir.SetVector(d, result);
+    return true;
+}
+
+// Qd = SignedSat(Qd +/- SignedSat(2 * Dn * Dm)), widening; sets FPSCR.QC.
+bool TranslatorVisitor::asimd_VQDMLAL(bool D, size_t sz, size_t Vn, size_t Vd, bool op, bool N, bool M, size_t Vm) {
+    if (sz == 0b11) {
+        return DecodeError();
+    }
+
+    if (sz == 0b00 || mcl::bit::get_bit<0>(Vd)) {
+        return UndefinedInstruction();
+    }
+
+    const size_t esize = 8U << sz;
+    const auto d = ToVector(true, Vd, D);
+    const auto n = ToVector(false, Vn, N);
+    const auto m = ToVector(false, Vm, M);
+
+    const auto reg_d = ir.GetVector(d);
+    const auto product = ir.VectorSignedSaturatedDoublingMultiplyLong(esize, ir.GetVector(n), ir.GetVector(m));
+    const auto result = op ? ir.VectorSignedSaturatedSub(esize * 2, reg_d, product)
+                           : ir.VectorSignedSaturatedAdd(esize * 2, reg_d, product);
+
+    ir.SetVector(d, result);
+    return true;
+}
+
+bool TranslatorVisitor::asimd_VQDMULL(bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm) {
+    if (sz == 0b11) {
+        return DecodeError();
+    }
+
+    if (sz == 0b00 || mcl::bit::get_bit<0>(Vd)) {
+        return UndefinedInstruction();
+    }
+
+    const size_t esize = 8U << sz;
+    const auto d = ToVector(true, Vd, D);
+    const auto n = ToVector(false, Vn, N);
+    const auto m = ToVector(false, Vm, M);
+
+    const auto result = ir.VectorSignedSaturatedDoublingMultiplyLong(esize, ir.GetVector(n), ir.GetVector(m));
 
     ir.SetVector(d, result);
     return true;

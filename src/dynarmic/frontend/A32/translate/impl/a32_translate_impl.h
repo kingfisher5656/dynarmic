@@ -891,13 +891,18 @@ struct TranslatorVisitor final {
     bool asimd_VABAL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
     bool asimd_VABDL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
     bool asimd_VMLAL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool op, bool N, bool M, size_t Vm);
+    bool asimd_VADDHN(bool R, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
+    bool asimd_VSUBHN(bool R, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
     bool asimd_VMULL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool P, bool N, bool M, size_t Vm);
+    bool asimd_VQDMLAL(bool D, size_t sz, size_t Vn, size_t Vd, bool op, bool N, bool M, size_t Vm);
+    bool asimd_VQDMULL(bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
 
     // Advanced SIMD two registers and a scalar
     bool asimd_VMLA_scalar(bool Q, bool D, size_t sz, size_t Vn, size_t Vd, bool op, bool F, bool N, bool M, size_t Vm);
     bool asimd_VMLAL_scalar(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool op, bool N, bool M, size_t Vm);
     bool asimd_VMUL_scalar(bool Q, bool D, size_t sz, size_t Vn, size_t Vd, bool F, bool N, bool M, size_t Vm);
     bool asimd_VMULL_scalar(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
+    bool asimd_VQDMLAL_scalar(bool D, size_t sz, size_t Vn, size_t Vd, bool op, bool N, bool M, size_t Vm);
     bool asimd_VQDMULL_scalar(bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
     bool asimd_VQDMULH_scalar(bool Q, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);
     bool asimd_VQRDMULH_scalar(bool Q, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool M, size_t Vm);

@@ -7,6 +7,7 @@
 
 #include <map>
 #include <optional>
+#include <vector>
 
 #include <mcl/stdint.hpp>
 #include <oaknut/configurable_code_block.hpp>
@@ -43,6 +44,11 @@ public:
 
     void ClearCache();
 
+    /// True once the code cache is nearly full. The owner must call ClearCache
+    /// between runs: clearing during a run would leave return stack buffer
+    /// entries on the host stack pointing at code that is then overwritten.
+    bool ClearCacheRequested() const { return clear_cache_requested; }
+
     void DumpDisassembly() const;
 
 protected:
@@ -62,6 +68,7 @@ protected:
     }
 
     size_t GetRemainingSize();
+    bool clear_cache_requested = false;
     EmittedBlockInfo Emit(IR::Block ir_block);
     void Link(EmittedBlockInfo& block);
     void LinkBlockLinks(const CodePtr entry_point, const CodePtr target_ptr, const std::vector<BlockRelocation>& block_relocations_list);
@@ -79,6 +86,22 @@ protected:
     std::map<CodePtr, IR::LocationDescriptor> reverse_block_entries;
     tsl::robin_map<CodePtr, EmittedBlockInfo> block_infos;
     tsl::robin_map<IR::LocationDescriptor, tsl::robin_set<CodePtr>> block_references;
+
+    // Direct-mapped cache of block_entries, read by the dispatcher's inline
+    // fast path (indirect branches that miss the return stack buffer).
+    // Empty slots hold an odd descriptor, which no guest location has.
+    struct FastDispatchEntry {
+        u64 location_descriptor;
+        CodePtr code_ptr;
+    };
+    static constexpr size_t fast_dispatch_table_bits = 14;
+    static constexpr u64 fast_dispatch_empty = 1;
+    std::vector<FastDispatchEntry> fast_dispatch_table;
+    static size_t FastDispatchIndex(u64 descriptor) {
+        return (descriptor >> 1) & ((size_t{1} << fast_dispatch_table_bits) - 1);
+    }
+    void AllocateFastDispatchTable();
+    void ClearFastDispatchTable();
 
     ExceptionHandler exception_handler;
     FastmemManager fastmem_manager;

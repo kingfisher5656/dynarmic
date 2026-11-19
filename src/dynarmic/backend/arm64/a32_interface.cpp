@@ -4,6 +4,9 @@
  */
 
 #include <memory>
+#include <cstdio>
+#include <atomic>
+#include <chrono>
 #include <mutex>
 
 #include <boost/icl/interval_set.hpp>
@@ -128,6 +131,22 @@ struct Jit::Impl final {
 
 private:
     void PerformRequestedCacheInvalidation(HaltReason hr) {
+        if (current_address_space.ClearCacheRequested()) {
+            std::unique_lock lock{invalidation_mutex};
+            static std::atomic<unsigned> full_clears{0};
+            const unsigned n = ++full_clears;
+            if (n <= 64 || (n & (n - 1)) == 0) {
+                static const auto start = std::chrono::steady_clock::now();
+                const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+                std::fprintf(stderr, "dynarmic: code cache (%zu MiB) nearly full, cleared between runs (#%u, %.1f s after the first)\n",
+                             conf.code_cache_size >> 20, n, t);
+            }
+            current_address_space.ClearCache();
+            invalidate_entire_cache = false;
+            invalid_cache_ranges.clear();
+            ClearHalt(HaltReason::CacheInvalidation);
+            return;
+        }
         if (Has(hr, HaltReason::CacheInvalidation)) {
             std::unique_lock lock{invalidation_mutex};
 

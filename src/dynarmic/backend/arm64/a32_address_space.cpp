@@ -158,6 +158,7 @@ static void* EmitExclusiveWriteCallTrampoline(oaknut::CodeGenerator& code, const
 A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf)
         : AddressSpace(conf.code_cache_size)
         , conf(conf) {
+    AllocateFastDispatchTable();
     EmitPrelude();
 }
 
@@ -316,6 +317,22 @@ void A32AddressSpace::EmitPrelude() {
             code.B(LE, return_from_run_code);
         }
 
+        // Fast path: direct-mapped lookup of the location descriptor
+        // (regs[15] | upper_location_descriptor << 32). Guest registers are
+        // all in the JIT state here, so X0-X3 are free.
+        oaknut::Label l_table, l_slow;
+        static_assert(offsetof(A32JitState, upper_location_descriptor) == offsetof(A32JitState, regs) + 16 * sizeof(u32));
+        static_assert(sizeof(FastDispatchEntry) == 16);
+        code.LDR(X0, l_table);
+        code.LDUR(X1, Xstate, offsetof(A32JitState, regs) + 15 * sizeof(u32));
+        code.UBFX(X2, X1, 1, fast_dispatch_table_bits);
+        code.ADD(X0, X0, X2, LSL, 4);
+        code.LDP(X2, X3, X0);
+        code.CMP(X2, X1);
+        code.B(NE, l_slow);
+        code.BR(X3);
+
+        code.l(l_slow);
         code.LDR(X0, l_this);
         code.MOV(X1, Xstate);
         code.LDR(Xscratch0, l_addr);
@@ -323,7 +340,10 @@ void A32AddressSpace::EmitPrelude() {
         code.BR(X0);
 
         const auto fn = [](A32AddressSpace& self, A32JitState& context) -> CodePtr {
-            return self.GetOrEmit(context.GetLocationDescriptor());
+            const IR::LocationDescriptor descriptor = context.GetLocationDescriptor();
+            const CodePtr entry_point = self.GetOrEmit(descriptor);
+            self.fast_dispatch_table[FastDispatchIndex(descriptor.Value())] = {descriptor.Value(), entry_point};
+            return entry_point;
         };
 
         code.align(8);
@@ -331,6 +351,8 @@ void A32AddressSpace::EmitPrelude() {
         code.dx(mcl::bit_cast<u64>(this));
         code.l(l_addr);
         code.dx(mcl::bit_cast<u64>(Common::FptrCast(fn)));
+        code.l(l_table);
+        code.dx(mcl::bit_cast<u64>(fast_dispatch_table.data()));
     }
 
     prelude_info.return_from_run_code = code.xptr<void*>();

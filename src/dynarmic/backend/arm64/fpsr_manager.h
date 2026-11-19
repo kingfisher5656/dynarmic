@@ -16,7 +16,7 @@ namespace Dynarmic::Backend::Arm64 {
 
 class FpsrManager {
 public:
-    explicit FpsrManager(oaknut::CodeGenerator& code, size_t state_fpsr_offset);
+    explicit FpsrManager(oaknut::CodeGenerator& code, size_t state_fpsr_offset, bool ignore_exception_flags = false);
 
     void Spill();
     void Load();
@@ -27,6 +27,7 @@ public:
 private:
     oaknut::CodeGenerator& code;
     size_t state_fpsr_offset;
+    bool ignore_exception_flags;
     bool fpsr_loaded = false;
 };
 

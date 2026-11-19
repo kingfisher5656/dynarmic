@@ -44,7 +44,15 @@ struct EmitContext {
 
     FP::FPCR FPCR(bool fpcr_controlled = true) const {
         const FP::FPCR fpcr = conf.descriptor_to_fpcr(block.Location());
-        return fpcr_controlled ? fpcr : fpcr.ASIMDStandardValue();
+        if (fpcr_controlled)
+            return fpcr;
+        // Unsafe_IgnoreStandardFPCRValue: run ASIMD with the guest's own FZ/DN
+        // instead of switching FPCR around every instruction. Keep the switch
+        // when the rounding mode differs, since emitters assume round-to-nearest.
+        const FP::FPCR standard = fpcr.ASIMDStandardValue();
+        if (conf.HasOptimization(OptimizationFlag::Unsafe_IgnoreStandardFPCRValue) && fpcr.RMode() == standard.RMode())
+            return fpcr;
+        return standard;
     }
 };
 

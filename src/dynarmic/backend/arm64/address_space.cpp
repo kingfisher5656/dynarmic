@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: 0BSD
  */
 
+#include <algorithm>
 #include <cstdio>
+#include <mach/mach_time.h>
 
 #include <mcl/bit_cast.hpp>
 
@@ -60,15 +62,6 @@ CodePtr AddressSpace::ReverseGetEntryPoint(CodePtr host_pc) {
     return nullptr;
 }
 
-CodePtr AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor) {
-    if (CodePtr block_entry = Get(descriptor)) {
-        return block_entry;
-    }
-
-    IR::Block ir_block = GenerateIR(descriptor);
-    const EmittedBlockInfo block_info = Emit(std::move(ir_block));
-    return block_info.entry_point;
-}
 
 void AddressSpace::InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescriptor>& descriptors) {
     UnprotectCodeMemory();
@@ -83,6 +76,13 @@ void AddressSpace::InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescri
         // and the currently executing block may have references to itself which need to be unlinked.
         RelinkForDescriptor(descriptor, nullptr);
 
+        if (!fast_dispatch_table.empty()) {
+            FastDispatchEntry& entry = fast_dispatch_table[FastDispatchIndex(descriptor.Value())];
+            if (entry.location_descriptor == descriptor.Value()) {
+                entry = {fast_dispatch_empty, nullptr};
+            }
+        }
+
         block_entries.erase(iter);
     }
 
@@ -90,11 +90,21 @@ void AddressSpace::InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescri
 }
 
 void AddressSpace::ClearCache() {
+    clear_cache_requested = false;
     block_entries.clear();
     reverse_block_entries.clear();
     block_infos.clear();
     block_references.clear();
+    ClearFastDispatchTable();
     code.set_offset(prelude_info.end_of_prelude);
+}
+
+void AddressSpace::AllocateFastDispatchTable() {
+    fast_dispatch_table.assign(size_t{1} << fast_dispatch_table_bits, FastDispatchEntry{fast_dispatch_empty, nullptr});
+}
+
+void AddressSpace::ClearFastDispatchTable() {
+    std::fill(fast_dispatch_table.begin(), fast_dispatch_table.end(), FastDispatchEntry{fast_dispatch_empty, nullptr});
 }
 
 void AddressSpace::DumpDisassembly() const {
@@ -107,8 +117,38 @@ size_t AddressSpace::GetRemainingSize() {
     return code_cache_size - static_cast<size_t>(code.offset());
 }
 
+extern "C" __attribute__((weak)) void LC32ProfileAddCompile(std::uint64_t ticks);
+extern "C" __attribute__((weak)) int LC32ProfileActive;
+
+CodePtr AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor) {
+    if (CodePtr block_entry = Get(descriptor)) {
+        return block_entry;
+    }
+
+    // Host-side profiling hook (LiveExec32 LC32_PROFILE): time translation.
+    const bool profile = &LC32ProfileActive != nullptr && LC32ProfileActive &&
+                         &LC32ProfileAddCompile != nullptr;
+    const std::uint64_t start = profile ? mach_absolute_time() : 0;
+    IR::Block ir_block = GenerateIR(descriptor);
+    const EmittedBlockInfo block_info = Emit(std::move(ir_block));
+    if (profile) {
+        LC32ProfileAddCompile(mach_absolute_time() - start);
+    }
+    return block_info.entry_point;
+}
+
 EmittedBlockInfo AddressSpace::Emit(IR::Block block) {
+    // Emit runs inside the dispatcher, in the middle of a run. Clearing here
+    // would leave the run's return stack buffer holding pointers into code
+    // that new blocks then overwrite, so the guest would resume in an
+    // unrelated block. Ask for a clear between runs and keep going on the
+    // reserve; clear now only as a last resort.
+    const size_t reserve = std::min<size_t>(code_cache_size / 4, 16 * 1024 * 1024);
+    if (!clear_cache_requested && GetRemainingSize() < reserve) {
+        clear_cache_requested = true;
+    }
     if (GetRemainingSize() < 1024 * 1024) {
+        std::fprintf(stderr, "dynarmic: code cache full during a run; clearing now\n");
         ClearCache();
     }
 
