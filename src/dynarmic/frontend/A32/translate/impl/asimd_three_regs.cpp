@@ -272,10 +272,6 @@ bool TranslatorVisitor::asimd_VQADD(bool U, bool D, size_t sz, size_t Vn, size_t
         return UndefinedInstruction();
     }
 
-    if (sz == 0b11) {
-        return UndefinedInstruction();
-    }
-
     const size_t esize = 8 << sz;
     const auto d = ToVector(Q, Vd, D);
     const auto m = ToVector(Q, Vm, M);
@@ -383,10 +379,6 @@ bool TranslatorVisitor::asimd_VHSUB(bool U, bool D, size_t sz, size_t Vn, size_t
 
 bool TranslatorVisitor::asimd_VQSUB(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool Q, bool M, size_t Vm) {
     if (Q && (mcl::bit::get_bit<0>(Vd) || mcl::bit::get_bit<0>(Vn) || mcl::bit::get_bit<0>(Vm))) {
-        return UndefinedInstruction();
-    }
-
-    if (sz == 0b11) {
         return UndefinedInstruction();
     }
 
@@ -508,6 +500,39 @@ bool TranslatorVisitor::asimd_VRSHL(bool U, bool D, size_t sz, size_t Vn, size_t
     const auto result = U ? ir.VectorRoundingShiftLeftUnsigned(esize, reg_m, reg_n)
                           : ir.VectorRoundingShiftLeftSigned(esize, reg_m, reg_n);
 
+    ir.SetVector(d, result);
+    return true;
+}
+
+bool TranslatorVisitor::asimd_VQRSHL(bool U, bool D, size_t sz, size_t Vn, size_t Vd, bool N, bool Q, bool M, size_t Vm) {
+    if (Q && (mcl::bit::get_bit<0>(Vd) || mcl::bit::get_bit<0>(Vn) || mcl::bit::get_bit<0>(Vm))) {
+        return UndefinedInstruction();
+    }
+
+    const size_t esize = 8U << sz;
+    const auto d = ToVector(Q, Vd, D);
+    const auto m = ToVector(Q, Vm, M);
+    const auto n = ToVector(Q, Vn, N);
+
+    const auto reg_m = ir.GetVector(m);
+    const auto reg_n = ir.GetVector(n);
+
+    // Per lane, with shift = SInt(Elem[n][7:0]):
+    //  - shift >= 0: the rounding constant is 0, so this is exactly VQSHL
+    //    (saturating shift left, which also sets FPSCR.QC).
+    //  - shift < 0: a rounding right shift. Its exact result always fits the
+    //    element, so it never saturates and equals VRSHL.
+    // VQSHL never saturates for a negative shift, so taking its QC as-is is exact.
+    const auto saturated = U ? ir.VectorUnsignedSaturatedShiftLeft(esize, reg_m, reg_n)
+                             : ir.VectorSignedSaturatedShiftLeft(esize, reg_m, reg_n);
+    const auto rounded = U ? ir.VectorRoundingShiftLeftUnsigned(esize, reg_m, reg_n)
+                           : ir.VectorRoundingShiftLeftSigned(esize, reg_m, reg_n);
+
+    // All-ones in lanes whose shift byte is negative.
+    const auto shift_byte_on_top = esize == 8 ? reg_n : ir.VectorLogicalShiftLeft(esize, reg_n, static_cast<u8>(esize - 8));
+    const auto negative = ir.VectorArithmeticShiftRight(esize, shift_byte_on_top, static_cast<u8>(esize - 1));
+
+    const auto result = ir.VectorOr(ir.VectorAnd(rounded, negative), ir.VectorAndNot(saturated, negative));
     ir.SetVector(d, result);
     return true;
 }
