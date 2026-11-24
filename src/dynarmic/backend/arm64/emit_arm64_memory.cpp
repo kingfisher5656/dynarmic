@@ -210,14 +210,14 @@ constexpr size_t page_bits = 12;
 constexpr size_t page_size = 1 << page_bits;
 constexpr size_t page_mask = (1 << page_bits) - 1;
 
-// This function may use Xscratch0 as a scratch register
-// Trashes NZCV
+// This function may use Xscratch1 as a scratch register (leaving addr & page_mask in Xscratch1 on page-boundary check)
+// Trashes NZCV when a check is emitted
 template<size_t bitsize>
-void EmitDetectMisalignedVAddr(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, const SharedLabel& fallback) {
+bool EmitDetectMisalignedVAddr(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, const SharedLabel& fallback) {
     static_assert(bitsize == 8 || bitsize == 16 || bitsize == 32 || bitsize == 64 || bitsize == 128);
 
     if (bitsize == 8 || (ctx.conf.detect_misaligned_access_via_page_table & bitsize) == 0) {
-        return;
+        return false;
     }
 
     if (!ctx.conf.only_detect_misalignment_via_page_table_on_page_boundary) {
@@ -238,24 +238,34 @@ void EmitDetectMisalignedVAddr(oaknut::CodeGenerator& code, EmitContext& ctx, oa
 
         code.TST(Xaddr, align_mask);
         code.B(NE, *fallback);
+        return false;
     } else {
         // If (addr & page_mask) > page_size - byte_size, use fallback.
-        code.AND(Xscratch0, Xaddr, page_mask);
-        code.CMP(Xscratch0, page_size - bitsize / 8);
+        code.AND(Xscratch1, Xaddr, page_mask);
+        code.CMP(Xscratch1, page_size - bitsize / 8);
         code.B(HI, *fallback);
+        return true;
     }
 }
 
-// Outputs Xscratch0 = page_table[addr >> page_bits]
+template<size_t bitsize>
+bool InlinePageTableLookupTrashesFlags(const EmitContext& ctx) {
+    const size_t unused_top_bits = 64 - ctx.conf.page_table_address_space_bits;
+    const bool misaligned_check = bitsize != 8 && (ctx.conf.detect_misaligned_access_via_page_table & bitsize) != 0;
+    const bool top_bits_check = !ctx.conf.silently_mirror_page_table && unused_top_bits != 0;
+    return misaligned_check || top_bits_check;
+}
+
+// Outputs Xscratch0 = table_reg[addr >> page_bits]
 // May use Xscratch1 as scratch register
 // Address to read/write = [ret0 + ret1], ret0 is always Xscratch0 and ret1 is either Xaddr or Xscratch1
-// Trashes NZCV
+// Trashes NZCV iff InlinePageTableLookupTrashesFlags<bitsize>(ctx) is true
 template<size_t bitsize>
-std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, const SharedLabel& fallback) {
+std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, const SharedLabel& fallback, oaknut::XReg table_reg) {
     const size_t valid_page_index_bits = ctx.conf.page_table_address_space_bits - page_bits;
     const size_t unused_top_bits = 64 - ctx.conf.page_table_address_space_bits;
 
-    EmitDetectMisalignedVAddr<bitsize>(code, ctx, Xaddr, fallback);
+    const bool has_page_offset_in_scratch1 = EmitDetectMisalignedVAddr<bitsize>(code, ctx, Xaddr, fallback);
 
     if (ctx.conf.silently_mirror_page_table || unused_top_bits == 0) {
         code.UBFX(Xscratch0, Xaddr, page_bits, valid_page_index_bits);
@@ -265,7 +275,7 @@ std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::Cod
         code.B(NE, *fallback);
     }
 
-    code.LDR(Xscratch0, Xpagetable, Xscratch0, LSL, 3);
+    code.LDR(Xscratch0, table_reg, Xscratch0, LSL, 3);
 
     if (ctx.conf.page_table_pointer_mask_bits != 0) {
         const u64 mask = u64(~u64(0)) << ctx.conf.page_table_pointer_mask_bits;
@@ -277,7 +287,9 @@ std::pair<oaknut::XReg, oaknut::XReg> InlinePageTableEmitVAddrLookup(oaknut::Cod
     if (ctx.conf.absolute_offset_page_table) {
         return std::make_pair(Xscratch0, Xaddr);
     }
-    code.AND(Xscratch1, Xaddr, page_mask);
+    if (!has_page_offset_in_scratch1) {
+        code.AND(Xscratch1, Xaddr, page_mask);
+    }
     return std::make_pair(Xscratch0, Xscratch1);
 }
 
@@ -415,13 +427,16 @@ void InlinePageTableEmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx
     }();
     const bool ordered = IsOrdered(args[2].GetImmediateAccType());
     ctx.fpsr.Spill();
-    ctx.reg_alloc.SpillFlags();
+    if (InlinePageTableLookupTrashesFlags<bitsize>(ctx) || !ctx.conf.wrapped_memory_preserves_flags || ctx.conf.check_halt_on_memory_access) {
+        ctx.reg_alloc.SpillFlags();
+    }
     RegAlloc::Realize(Xaddr, Rvalue);
 
     SharedLabel fallback = GenSharedLabel(), end = GenSharedLabel();
 
-    const auto [Xbase, Xoffset] = InlinePageTableEmitVAddrLookup<bitsize>(code, ctx, Xaddr, fallback);
-    EmitMemoryLdr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered);
+    const auto [Xbase, Xoffset] = InlinePageTableEmitVAddrLookup<bitsize>(code, ctx, Xaddr, fallback, Xpagetable);
+    const bool extend32 = ctx.conf.absolute_offset_page_table && ctx.conf.zero_extend_32bit_page_table_address;
+    EmitMemoryLdr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered, extend32);
 
     ctx.deferred_emits.emplace_back([&code, &ctx, inst, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, fallback, end] {
         code.l(*fallback);
@@ -455,13 +470,17 @@ void InlinePageTableEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ct
     }();
     const bool ordered = IsOrdered(args[3].GetImmediateAccType());
     ctx.fpsr.Spill();
-    ctx.reg_alloc.SpillFlags();
+    if (InlinePageTableLookupTrashesFlags<bitsize>(ctx) || !ctx.conf.wrapped_memory_preserves_flags || ctx.conf.check_halt_on_memory_access) {
+        ctx.reg_alloc.SpillFlags();
+    }
     RegAlloc::Realize(Xaddr, Rvalue);
 
     SharedLabel fallback = GenSharedLabel(), end = GenSharedLabel();
 
-    const auto [Xbase, Xoffset] = InlinePageTableEmitVAddrLookup<bitsize>(code, ctx, Xaddr, fallback);
-    EmitMemoryStr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered);
+    const oaknut::XReg write_table_reg = ctx.conf.write_page_table_pointer != 0 ? Xfastmem : Xpagetable;
+    const auto [Xbase, Xoffset] = InlinePageTableEmitVAddrLookup<bitsize>(code, ctx, Xaddr, fallback, write_table_reg);
+    const bool extend32 = ctx.conf.absolute_offset_page_table && ctx.conf.zero_extend_32bit_page_table_address;
+    EmitMemoryStr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered, extend32);
 
     ctx.deferred_emits.emplace_back([&code, &ctx, inst, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, fallback, end] {
         code.l(*fallback);

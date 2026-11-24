@@ -427,18 +427,22 @@ template int RegAlloc::RealizeReadWriteImpl<HostLoc::Kind::Gpr>(const IR::Value&
 template int RegAlloc::RealizeReadWriteImpl<HostLoc::Kind::Fpr>(const IR::Value&, const IR::Inst*);
 template int RegAlloc::RealizeReadWriteImpl<HostLoc::Kind::Flags>(const IR::Value&, const IR::Inst*);
 
-int RegAlloc::AllocateRegister(const std::array<HostLocInfo, 32>& regs, const std::vector<int>& order) const {
-    const auto empty = std::find_if(order.begin(), order.end(), [&](int i) { return regs[i].IsCompletelyEmpty(); });
-    if (empty != order.end()) {
-        return *empty;
+int RegAlloc::AllocateRegister(const std::array<HostLocInfo, 32>& regs, std::span<const int> order) const {
+    for (int i : order) {
+        if (regs[i].IsCompletelyEmpty()) {
+            return i;
+        }
     }
 
-    std::vector<int> candidates;
-    std::copy_if(order.begin(), order.end(), std::back_inserter(candidates), [&](int i) { return regs[i].MaybeAllocatable(); });
-
-    // TODO: LRU
-    std::uniform_int_distribution<size_t> dis{0, candidates.size() - 1};
-    return candidates[dis(rand_gen)];
+    std::array<int, 32> candidates;
+    size_t count = 0;
+    for (int i : order) {
+        if (regs[i].MaybeAllocatable()) {
+            candidates[count++] = i;
+        }
+    }
+    ASSERT(count > 0);
+    return candidates[evict_cursor++ % count];
 }
 
 void RegAlloc::SpillGpr(int index) {

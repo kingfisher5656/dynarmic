@@ -65,7 +65,9 @@ struct Jit::Impl {
             , emitter(block_of_code, conf, jit)
             , polyfill_options(GenPolyfillOptions(block_of_code))
             , conf(std::move(conf))
-            , jit_interface(jit) {}
+            , jit_interface(jit) {
+        ASSERT_MSG(!this->conf.write_page_table, "write_page_table is only supported on the arm64 backend");
+    }
 
     ~Impl() = default;
 

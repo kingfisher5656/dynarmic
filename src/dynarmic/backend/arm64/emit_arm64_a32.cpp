@@ -170,9 +170,9 @@ void EmitA32CheckMemoryAbort(oaknut::CodeGenerator& code, EmitContext& ctx, IR::
 
     const A32::LocationDescriptor current_location{IR::LocationDescriptor{inst->GetArg(0).GetU64()}};
 
+    static_assert(static_cast<u32>(HaltReason::MemoryAbort) == (1u << 2));
     code.LDAR(Wscratch0, Xhalt);
-    code.TST(Wscratch0, static_cast<u32>(HaltReason::MemoryAbort));
-    code.B(EQ, end);
+    code.TBZ(Wscratch0, 2, end);
     EmitSetUpperLocationDescriptor(code, ctx, current_location, ctx.block.Location());
     code.MOV(Wscratch0, current_location.PC());
     code.STR(Wscratch0, Xstate, offsetof(A32JitState, regs) + sizeof(u32) * 15);

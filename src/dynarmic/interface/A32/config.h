@@ -156,6 +156,10 @@ struct UserConfig {
     static constexpr std::size_t PAGE_BITS = 12;
     static constexpr std::size_t NUM_PAGE_TABLE_ENTRIES = 1 << (32 - PAGE_BITS);
     std::array<std::uint8_t*, NUM_PAGE_TABLE_ENTRIES>* page_table = nullptr;
+    /// Optional separate page table used for memory writes when fastmem is disabled
+    /// (arm64 backend only). Allows read-only pages to remain in page_table while
+    /// still trapping writes.
+    std::array<std::uint8_t*, NUM_PAGE_TABLE_ENTRIES>* write_page_table = nullptr;
     /// Determines if the pointer in the page_table shall be offseted locally or globally.
     /// 'false' will access page_table[addr >> bits][addr & mask]
     /// 'true'  will access page_table[addr >> bits][addr]

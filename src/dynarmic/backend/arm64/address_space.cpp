@@ -22,17 +22,19 @@
 
 namespace Dynarmic::Backend::Arm64 {
 
-AddressSpace::AddressSpace(size_t code_cache_size)
+AddressSpace::AddressSpace(size_t code_cache_size, bool register_exception_handler)
         : code_cache_size(code_cache_size)
         , mem(code_cache_size)
         , code(mem.wptr(), mem.xptr())
         , fastmem_manager(exception_handler) {
     ASSERT_MSG(code_cache_size <= 128 * 1024 * 1024, "code_cache_size > 128 MiB not currently supported");
 
-    exception_handler.Register(mem, code_cache_size);
-    exception_handler.SetFastmemCallback([this](u64 host_pc) {
-        return FastmemCallback(host_pc);
-    });
+    if (register_exception_handler) {
+        exception_handler.Register(mem, code_cache_size);
+        exception_handler.SetFastmemCallback([this](u64 host_pc) {
+            return FastmemCallback(host_pc);
+        });
+    }
 }
 
 AddressSpace::~AddressSpace() = default;
@@ -347,9 +349,11 @@ void AddressSpace::RelinkForDescriptor(IR::LocationDescriptor target_descriptor,
 
             if (auto relocation_iter = block_info.block_relocations.find(target_descriptor); relocation_iter != block_info.block_relocations.end()) {
                 LinkBlockLinks(block_info.entry_point, target_ptr, relocation_iter->second);
+                for (auto [ptr_offset, type] : relocation_iter->second) {
+                    const size_t patch_size = type == BlockRelocationType::MoveToScratch1 ? 8 : 4;
+                    mem.invalidate(reinterpret_cast<u32*>(block_info.entry_point + ptr_offset), patch_size);
+                }
             }
-
-            mem.invalidate(reinterpret_cast<u32*>(block_info.entry_point), block_info.size);
         }
     }
 }

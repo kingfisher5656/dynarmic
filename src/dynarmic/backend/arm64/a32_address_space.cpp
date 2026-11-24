@@ -53,13 +53,17 @@ static void* EmitWrappedReadCallTrampoline(oaknut::CodeGenerator& code, T* this_
     constexpr u64 save_regs = ABI_CALLER_SAVE & ~ToRegList(Xscratch0);
 
     void* target = code.xptr<void*>();
-    ABI_PushRegisters(code, save_regs, 0);
+    ABI_PushRegisters(code, save_regs, 16);
+    code.MRS(Xscratch1, oaknut::SystemReg::NZCV);
+    code.STR(Xscratch1, SP, 0);
     code.LDR(X0, l_this);
     code.MOV(X1, Xscratch0);
     code.LDR(Xscratch0, l_addr);
     code.BLR(Xscratch0);
     code.MOV(Xscratch0, X0);
-    ABI_PopRegisters(code, save_regs, 0);
+    code.LDR(Xscratch1, SP, 0);
+    code.MSR(oaknut::SystemReg::NZCV, Xscratch1);
+    ABI_PopRegisters(code, save_regs, 16);
     code.RET();
 
     code.align(8);
@@ -108,13 +112,17 @@ static void* EmitWrappedWriteCallTrampoline(oaknut::CodeGenerator& code, T* this
     constexpr u64 save_regs = ABI_CALLER_SAVE;
 
     void* target = code.xptr<void*>();
-    ABI_PushRegisters(code, save_regs, 0);
+    ABI_PushRegisters(code, save_regs, 16);
     code.LDR(X0, l_this);
     code.MOV(X1, Xscratch0);
     code.MOV(X2, Xscratch1);
+    code.MRS(Xscratch1, oaknut::SystemReg::NZCV);
+    code.STR(Xscratch1, SP, 0);
     code.LDR(Xscratch0, l_addr);
     code.BLR(Xscratch0);
-    ABI_PopRegisters(code, save_regs, 0);
+    code.LDR(Xscratch1, SP, 0);
+    code.MSR(oaknut::SystemReg::NZCV, Xscratch1);
+    ABI_PopRegisters(code, save_regs, 16);
     code.RET();
 
     code.align(8);
@@ -156,8 +164,9 @@ static void* EmitExclusiveWriteCallTrampoline(oaknut::CodeGenerator& code, const
 }
 
 A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf)
-        : AddressSpace(conf.code_cache_size)
+        : AddressSpace(conf.code_cache_size, conf.fastmem_pointer.has_value())
         , conf(conf) {
+    ASSERT(!(conf.write_page_table && conf.fastmem_pointer));
     AllocateFastDispatchTable();
     EmitPrelude();
 }
@@ -166,7 +175,9 @@ IR::Block A32AddressSpace::GenerateIR(IR::LocationDescriptor descriptor) const {
     IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
 
     Optimization::PolyfillPass(ir_block, {});
-    Optimization::NamingPass(ir_block);
+    if (conf.fastmem_pointer || conf.very_verbose_debugging_output) {
+        Optimization::NamingPass(ir_block);
+    }
     if (conf.HasOptimization(OptimizationFlag::GetSetElimination)) {
         Optimization::A32GetSetElimination(ir_block, {.convert_nzc_to_nz = true});
         Optimization::DeadCodeElimination(ir_block);
@@ -235,6 +246,8 @@ void A32AddressSpace::EmitPrelude() {
         }
         if (conf.fastmem_pointer) {
             code.MOV(Xfastmem, *conf.fastmem_pointer);
+        } else if (conf.write_page_table) {
+            code.MOV(Xfastmem, mcl::bit_cast<u64>(conf.write_page_table));
         }
 
         if (conf.HasOptimization(OptimizationFlag::ReturnStackBuffer)) {
@@ -254,7 +267,13 @@ void A32AddressSpace::EmitPrelude() {
         code.AND(Wscratch0, Wscratch0, 0xffff0000);
         code.MRS(Xscratch1, oaknut::SystemReg::FPCR);
         code.STR(Wscratch1, SP, offsetof(StackLayout, save_host_fpcr));
-        code.MSR(oaknut::SystemReg::FPCR, Xscratch0);
+        {
+            oaknut::Label skip_fpcr;
+            code.CMP(Wscratch0, Wscratch1);
+            code.B(EQ, skip_fpcr);
+            code.MSR(oaknut::SystemReg::FPCR, Xscratch0);
+            code.l(skip_fpcr);
+        }
 
         code.LDAR(Wscratch0, Xhalt);
         code.CBNZ(Wscratch0, return_from_run_code);
@@ -274,6 +293,8 @@ void A32AddressSpace::EmitPrelude() {
         }
         if (conf.fastmem_pointer) {
             code.MOV(Xfastmem, *conf.fastmem_pointer);
+        } else if (conf.write_page_table) {
+            code.MOV(Xfastmem, mcl::bit_cast<u64>(conf.write_page_table));
         }
 
         if (conf.HasOptimization(OptimizationFlag::ReturnStackBuffer)) {
@@ -292,7 +313,13 @@ void A32AddressSpace::EmitPrelude() {
         code.AND(Wscratch0, Wscratch0, 0xffff0000);
         code.MRS(Xscratch1, oaknut::SystemReg::FPCR);
         code.STR(Wscratch1, SP, offsetof(StackLayout, save_host_fpcr));
-        code.MSR(oaknut::SystemReg::FPCR, Xscratch0);
+        {
+            oaknut::Label skip_fpcr;
+            code.CMP(Wscratch0, Wscratch1);
+            code.B(EQ, skip_fpcr);
+            code.MSR(oaknut::SystemReg::FPCR, Xscratch0);
+            code.l(skip_fpcr);
+        }
 
         oaknut::Label step_hr_loop;
         code.l(step_hr_loop);
@@ -366,7 +393,14 @@ void A32AddressSpace::EmitPrelude() {
         }
 
         code.LDR(Wscratch0, SP, offsetof(StackLayout, save_host_fpcr));
-        code.MSR(oaknut::SystemReg::FPCR, Xscratch0);
+        code.MRS(Xscratch1, oaknut::SystemReg::FPCR);
+        {
+            oaknut::Label skip_fpcr;
+            code.CMP(Wscratch0, Wscratch1);
+            code.B(EQ, skip_fpcr);
+            code.MSR(oaknut::SystemReg::FPCR, Xscratch0);
+            code.l(skip_fpcr);
+        }
 
         oaknut::Label exit_hr_loop;
         code.l(exit_hr_loop);
@@ -384,7 +418,7 @@ void A32AddressSpace::EmitPrelude() {
 
     prelude_info.end_of_prelude = code.offset();
 
-    mem.invalidate_all();
+    mem.invalidate(reinterpret_cast<u32*>(mem.xptr()), prelude_info.end_of_prelude);
     ProtectCodeMemory();
 }
 
@@ -403,12 +437,15 @@ EmitConfig A32AddressSpace::GetEmitConfig() {
         .check_halt_on_memory_access = conf.check_halt_on_memory_access,
 
         .page_table_pointer = mcl::bit_cast<u64>(conf.page_table),
+        .write_page_table_pointer = mcl::bit_cast<u64>(conf.write_page_table),
         .page_table_address_space_bits = 32,
         .page_table_pointer_mask_bits = conf.page_table_pointer_mask_bits,
         .silently_mirror_page_table = true,
         .absolute_offset_page_table = conf.absolute_offset_page_table,
         .detect_misaligned_access_via_page_table = conf.detect_misaligned_access_via_page_table,
         .only_detect_misalignment_via_page_table_on_page_boundary = conf.only_detect_misalignment_via_page_table_on_page_boundary,
+        .zero_extend_32bit_page_table_address = true,
+        .wrapped_memory_preserves_flags = true,
 
         .fastmem_pointer = conf.fastmem_pointer,
         .recompile_on_fastmem_failure = conf.recompile_on_fastmem_failure,

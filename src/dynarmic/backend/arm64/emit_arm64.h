@@ -124,12 +124,15 @@ struct EmitConfig {
 
     // Page table
     u64 page_table_pointer;
+    u64 write_page_table_pointer = 0;
     size_t page_table_address_space_bits;
     int page_table_pointer_mask_bits;
     bool silently_mirror_page_table;
     bool absolute_offset_page_table;
     u8 detect_misaligned_access_via_page_table;
     bool only_detect_misalignment_via_page_table_on_page_boundary;
+    bool zero_extend_32bit_page_table_address = false;
+    bool wrapped_memory_preserves_flags = false;
 
     // Fastmem
     std::optional<u64> fastmem_pointer;
