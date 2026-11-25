@@ -98,15 +98,24 @@ bool TranslatorVisitor::v8_VST_multiple(bool D, Reg n, size_t Vd, Imm<4> type, s
     const bool register_index = m != Reg::R15 && m != Reg::R13;
 
     IR::U32 address = ir.GetRegister(n);
-    for (size_t r = 0; r < regs; r++) {
-        for (size_t e = 0; e < elements; e++) {
-            for (size_t i = 0; i < nelem; i++) {
-                const ExtReg ext_reg = d + i * inc + r;
-                const IR::U64 shifted_element = ir.LogicalShiftRight(ir.GetExtendedRegister(ext_reg), ir.Imm8(static_cast<u8>(e * ebytes * 8)));
-                const IR::UAny element = ir.LeastSignificant(8 * ebytes, shifted_element);
-                ir.WriteMemory(8 * ebytes, address, element, IR::AccType::NORMAL);
+    if (nelem == 1 && WideVectorMemory()) {
+        // VST1: the bytes of consecutive D registers go to consecutive memory, whatever the
+        // element size, so store each register with one 64-bit access.
+        const auto run = ir.BeginMemoryRun(address, 8 * regs, true, regs);
+        for (size_t r = 0; r < regs; r++) {
+            ir.WriteMemoryRun64(run, static_cast<u32>(8 * r), ir.GetExtendedRegister(d + r), IR::AccType::NORMAL);
+        }
+    } else {
+        for (size_t r = 0; r < regs; r++) {
+            for (size_t e = 0; e < elements; e++) {
+                for (size_t i = 0; i < nelem; i++) {
+                    const ExtReg ext_reg = d + i * inc + r;
+                    const IR::U64 shifted_element = ir.LogicalShiftRight(ir.GetExtendedRegister(ext_reg), ir.Imm8(static_cast<u8>(e * ebytes * 8)));
+                    const IR::UAny element = ir.LeastSignificant(8 * ebytes, shifted_element);
+                    ir.WriteMemory(8 * ebytes, address, element, IR::AccType::NORMAL);
 
-                address = ir.Add(address, ir.Imm32(static_cast<u32>(ebytes)));
+                    address = ir.Add(address, ir.Imm32(static_cast<u32>(ebytes)));
+                }
             }
         }
     }
@@ -146,24 +155,33 @@ bool TranslatorVisitor::v8_VLD_multiple(bool D, Reg n, size_t Vd, Imm<4> type, s
     const bool wback = m != Reg::R15;
     const bool register_index = m != Reg::R15 && m != Reg::R13;
 
-    for (size_t r = 0; r < regs; r++) {
-        for (size_t i = 0; i < nelem; i++) {
-            const ExtReg ext_reg = d + i * inc + r;
-            ir.SetExtendedRegister(ext_reg, ir.Imm64(0));
+    if (nelem == 1 && WideVectorMemory()) {
+        // VLD1: consecutive memory fills consecutive D registers, whatever the element
+        // size, so load each register with one 64-bit access.
+        const auto run = ir.BeginMemoryRun(ir.GetRegister(n), 8 * regs, false, regs);
+        for (size_t r = 0; r < regs; r++) {
+            ir.SetExtendedRegister(d + r, ir.ReadMemoryRun64(run, static_cast<u32>(8 * r), IR::AccType::NORMAL, true));
         }
-    }
-
-    IR::U32 address = ir.GetRegister(n);
-    for (size_t r = 0; r < regs; r++) {
-        for (size_t e = 0; e < elements; e++) {
+    } else {
+        for (size_t r = 0; r < regs; r++) {
             for (size_t i = 0; i < nelem; i++) {
-                const IR::U64 element = ir.ZeroExtendToLong(ir.ReadMemory(ebytes * 8, address, IR::AccType::NORMAL));
-                const IR::U64 shifted_element = ir.LogicalShiftLeft(element, ir.Imm8(static_cast<u8>(e * ebytes * 8)));
-
                 const ExtReg ext_reg = d + i * inc + r;
-                ir.SetExtendedRegister(ext_reg, ir.Or(ir.GetExtendedRegister(ext_reg), shifted_element));
+                ir.SetExtendedRegister(ext_reg, ir.Imm64(0));
+            }
+        }
 
-                address = ir.Add(address, ir.Imm32(static_cast<u32>(ebytes)));
+        IR::U32 address = ir.GetRegister(n);
+        for (size_t r = 0; r < regs; r++) {
+            for (size_t e = 0; e < elements; e++) {
+                for (size_t i = 0; i < nelem; i++) {
+                    const IR::U64 element = ir.ZeroExtendToLong(ir.ReadMemory(ebytes * 8, address, IR::AccType::NORMAL));
+                    const IR::U64 shifted_element = ir.LogicalShiftLeft(element, ir.Imm8(static_cast<u8>(e * ebytes * 8)));
+
+                    const ExtReg ext_reg = d + i * inc + r;
+                    ir.SetExtendedRegister(ext_reg, ir.Or(ir.GetExtendedRegister(ext_reg), shifted_element));
+
+                    address = ir.Add(address, ir.Imm32(static_cast<u32>(ebytes)));
+                }
             }
         }
     }

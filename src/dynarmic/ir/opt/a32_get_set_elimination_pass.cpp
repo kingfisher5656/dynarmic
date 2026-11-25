@@ -180,7 +180,7 @@ void FlagsPass(IR::Block& block) {
     }
 }
 
-void RegisterPass(IR::Block& block) {
+void RegisterPass(IR::Block& block, bool forward_ext_reg_views) {
     using Iterator = IR::Block::iterator;
 
     struct RegInfo {
@@ -221,12 +221,99 @@ void RegisterPass(IR::Block& block) {
     };
     std::array<ExtRegInfo, 64> ext_reg_info;
 
-    const auto do_ext_get = [](ExtValueType type, std::initializer_list<std::reference_wrapper<ExtRegInfo>> infos, Iterator get_inst) {
+    // Location and version don't matter here.
+    A32::IREmitter ir{block, A32::LocationDescriptor{block.Location()}, {}};
+
+    // forward_ext_reg_views: a read of a register whose words were last written by several
+    // smaller register ops (two D registers, then the Q register that contains them; two S
+    // registers, then their D register) would load from the JIT state right after those
+    // stores, which the host cannot store-forward (a long stall). Build such values from the
+    // pieces instead. A read contained in one earlier write is left alone: its load is
+    // store-forwarded, which is as cheap as moving the value between register files.
+    // ext_reg_info[k] describes 32-bit word k by the register op that last covered it (S
+    // register k, D register k / 2 or Q register k / 4, as the type says), so two words of
+    // one D register with the same non-Single type come from the same op.
+    // These insert IR before the current insertion point.
+    const auto info_type = [&](size_t k) { return ext_reg_info[k].value_type; };
+    const auto pack_singles = [&](size_t first_word) {
+        return ir.Pack2x32To1x64(IR::U32{ext_reg_info[first_word].register_value}, IR::U32{ext_reg_info[first_word + 1].register_value});
+    };
+    // Value of register `type` whose first word is `first`, when it is worth building.
+    const auto view_of = [&](ExtValueType type, size_t first) -> std::optional<IR::Value> {
+        switch (type) {
+        case ExtValueType::Single:
+            // The low half of a D value is free (same register in either file).
+            if (info_type(first) == ExtValueType::Double && first % 2 == 0) {
+                return IR::Value{ir.LeastSignificantWord(IR::U64{ext_reg_info[first].register_value})};
+            }
+            return std::nullopt;
+        case ExtValueType::Double:
+            if (info_type(first) == ExtValueType::Single && info_type(first + 1) == ExtValueType::Single) {
+                return IR::Value{pack_singles(first)};
+            }
+            // A D register out of a vector value (e.g. VST1 of a Q register a NEON op just
+            // wrote). The lane goes to a general register, which suits stores and VMOVs.
+            if (info_type(first) == ExtValueType::VectorQuad && info_type(first + 1) == ExtValueType::VectorQuad) {
+                return IR::Value{ir.VectorGetElement(64, IR::U128{ext_reg_info[first].register_value}, (first / 2) % 2)};
+            }
+            if (info_type(first) == ExtValueType::VectorDouble && info_type(first + 1) == ExtValueType::VectorDouble) {
+                return IR::Value{ir.VectorGetElement(64, IR::U128{ext_reg_info[first].register_value}, 0)};
+            }
+            return std::nullopt;
+        case ExtValueType::VectorDouble:
+            if (info_type(first) == ExtValueType::VectorQuad && info_type(first + 1) == ExtValueType::VectorQuad && first % 4 == 0) {
+                return IR::Value{ir.VectorZeroUpper(IR::U128{ext_reg_info[first].register_value})};
+            }
+            if (info_type(first) == ExtValueType::Double && info_type(first + 1) == ExtValueType::Double) {
+                return IR::Value{ir.ZeroExtendToQuad(IR::U64{ext_reg_info[first].register_value})};
+            }
+            if (info_type(first) == ExtValueType::Single && info_type(first + 1) == ExtValueType::Single) {
+                return IR::Value{ir.ZeroExtendToQuad(pack_singles(first))};
+            }
+            return std::nullopt;
+        case ExtValueType::VectorQuad: {
+            const ExtValueType lo = info_type(first), hi = info_type(first + 2);
+            if (lo != info_type(first + 1) || hi != info_type(first + 3)) {
+                return std::nullopt;
+            }
+            const IR::Value lo_value = ext_reg_info[first].register_value;
+            const IR::Value hi_value = ext_reg_info[first + 2].register_value;
+            if (lo == ExtValueType::Double && hi == ExtValueType::Double) {
+                return IR::Value{ir.Pack2x64To1x128(IR::U64{lo_value}, IR::U64{hi_value})};
+            }
+            if (lo == ExtValueType::VectorDouble && hi == ExtValueType::VectorDouble) {
+                return IR::Value{ir.VectorInterleaveLower(64, IR::U128{lo_value}, IR::U128{hi_value})};
+            }
+            // One half rewritten by a D op since the Q register was last written or read.
+            if (lo == ExtValueType::VectorQuad && hi == ExtValueType::Double) {
+                return IR::Value{ir.VectorSetElement(64, IR::U128{lo_value}, 1, IR::U64{hi_value})};
+            }
+            if (lo == ExtValueType::Double && hi == ExtValueType::VectorQuad) {
+                return IR::Value{ir.VectorSetElement(64, IR::U128{hi_value}, 0, IR::U64{lo_value})};
+            }
+            return std::nullopt;
+        }
+        case ExtValueType::Empty:
+            break;
+        }
+        return std::nullopt;
+    };
+
+    const auto do_ext_get = [&](ExtValueType type, std::initializer_list<std::reference_wrapper<ExtRegInfo>> infos, Iterator get_inst) {
         if (!std::all_of(infos.begin(), infos.end(), [type](const auto& info) { return info.get().value_type == type; })) {
+            IR::Value value = IR::Value(&*get_inst);
+            if (forward_ext_reg_views && std::none_of(infos.begin(), infos.end(), [](const auto& info) { return info.get().value_type == ExtValueType::Empty; })) {
+                const size_t first = static_cast<size_t>(&std::data(infos)[0].get() - ext_reg_info.data());
+                ir.SetInsertionPointBefore(get_inst);
+                if (const auto view = view_of(type, first)) {
+                    get_inst->ReplaceUsesWith(*view);
+                    value = *view;
+                }
+            }
             for (auto& info : infos) {
                 info.get() = {
                     .value_type = type,
-                    .register_value = IR::Value(&*get_inst),
+                    .register_value = value,
                     .last_set_instruction = std::nullopt,
                 };
             }
@@ -250,8 +337,6 @@ void RegisterPass(IR::Block& block) {
         }
     };
 
-    // Location and version don't matter here.
-    A32::IREmitter ir{block, A32::LocationDescriptor{block.Location()}, {}};
 
     for (auto inst = block.begin(); inst != block.end(); ++inst) {
         switch (inst->GetOpcode()) {
@@ -369,9 +454,9 @@ void RegisterPass(IR::Block& block) {
 
 }  // namespace
 
-void A32GetSetElimination(IR::Block& block, A32GetSetEliminationOptions) {
+void A32GetSetElimination(IR::Block& block, A32GetSetEliminationOptions opt) {
     FlagsPass(block);
-    RegisterPass(block);
+    RegisterPass(block, opt.forward_ext_reg_views);
 }
 
 }  // namespace Dynarmic::Optimization

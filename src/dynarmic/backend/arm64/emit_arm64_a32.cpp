@@ -22,13 +22,23 @@ namespace Dynarmic::Backend::Arm64 {
 
 using namespace oaknut::util;
 
-oaknut::Label EmitA32Cond(oaknut::CodeGenerator& code, EmitContext&, IR::Cond cond) {
+oaknut::Label EmitA32Cond(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Cond cond) {
     oaknut::Label pass;
-    // TODO: Flags in host flags
-    code.LDR(Wscratch0, Xstate, offsetof(A32JitState, cpsr_nzcv));
-    code.MSR(oaknut::SystemReg::NZCV, Xscratch0);
+    if (!ctx.terminal_nzcv_in_host) {
+        code.LDR(Wscratch0, Xstate, offsetof(A32JitState, cpsr_nzcv));
+        code.MSR(oaknut::SystemReg::NZCV, Xscratch0);
+    }
+    if (ctx.recording_flags_entry) {
+        // Blocks that leave the guest flags in the host flags link to here.
+        ctx.ebi.flags_entry_offset = code.xptr<CodePtr>() - ctx.ebi.entry_point;
+    }
     code.B(static_cast<oaknut::Cond>(cond), pass);
     return pass;
+}
+
+// With the guest NZCV in the host flags, links go past a conditional target's flag load.
+static BlockRelocationType LinkRelocationType(const EmitContext& ctx) {
+    return ctx.terminal_nzcv_in_host ? BlockRelocationType::BranchFlagsValid : BlockRelocationType::Branch;
 }
 
 void EmitA32Terminal(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Term::Terminal terminal, IR::LocationDescriptor initial_location, bool is_single_step);
@@ -65,13 +75,19 @@ void EmitA32Terminal(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Term::Li
 
     if (ctx.conf.HasOptimization(OptimizationFlag::BlockLinking) && !is_single_step) {
         if (ctx.conf.enable_cycle_counting) {
-            code.CMP(Xticks, 0);
-            code.B(LE, fail);
-            EmitBlockLinkRelocation(code, ctx, terminal.next, BlockRelocationType::Branch);
+            if (ctx.terminal_nzcv_in_host) {
+                // ticks <= 0, without touching the flags
+                code.CBZ(Xticks, fail);
+                code.TBNZ(Xticks, 63, fail);
+            } else {
+                code.CMP(Xticks, 0);
+                code.B(LE, fail);
+            }
+            EmitBlockLinkRelocation(code, ctx, terminal.next, LinkRelocationType(ctx));
         } else {
             code.LDAR(Wscratch0, Xhalt);
             code.CBNZ(Wscratch0, fail);
-            EmitBlockLinkRelocation(code, ctx, terminal.next, BlockRelocationType::Branch);
+            EmitBlockLinkRelocation(code, ctx, terminal.next, LinkRelocationType(ctx));
         }
     }
 
@@ -85,7 +101,7 @@ void EmitA32Terminal(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Term::Li
     EmitSetUpperLocationDescriptor(code, ctx, terminal.next, initial_location);
 
     if (ctx.conf.HasOptimization(OptimizationFlag::BlockLinking) && !is_single_step) {
-        EmitBlockLinkRelocation(code, ctx, terminal.next, BlockRelocationType::Branch);
+        EmitBlockLinkRelocation(code, ctx, terminal.next, LinkRelocationType(ctx));
     }
 
     code.MOV(Wscratch0, A32::LocationDescriptor{terminal.next}.PC());
@@ -133,8 +149,13 @@ void EmitA32Terminal(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Term::If
 
 void EmitA32Terminal(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Term::CheckBit terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
     oaknut::Label fail;
-    code.LDRB(Wscratch0, SP, offsetof(StackLayout, check_bit));
-    code.CBZ(Wscratch0, fail);
+    if (ctx.terminal_check_bit_reg) {
+        code.TBZ(oaknut::WReg{*ctx.terminal_check_bit_reg}, 0, fail);
+        ctx.terminal_check_bit_reg.reset();
+    } else {
+        code.LDRB(Wscratch0, SP, offsetof(StackLayout, check_bit));
+        code.CBZ(Wscratch0, fail);
+    }
     EmitA32Terminal(code, ctx, terminal.then_, initial_location, is_single_step);
     code.l(fail);
     EmitA32Terminal(code, ctx, terminal.else_, initial_location, is_single_step);
@@ -195,6 +216,40 @@ void EmitIR<IR::Opcode::A32SetCheckBit>(oaknut::CodeGenerator& code, EmitContext
         RegAlloc::Realize(Wbit);
         code.STRB(Wbit, SP, offsetof(StackLayout, check_bit));
     }
+}
+
+template<>
+void EmitIR<IR::Opcode::A32GetCpsrNZCV>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    if (ctx.entry_nzcv_in_host) {
+        // First instruction of a conditional block: the condition check left them there.
+        auto flags = ctx.reg_alloc.WriteFlags(inst);
+        RegAlloc::Realize(flags);
+        return;
+    }
+    auto Wnzcv = ctx.reg_alloc.WriteW(inst);
+    RegAlloc::Realize(Wnzcv);
+    code.LDR(Wnzcv, Xstate, offsetof(A32JitState, cpsr_nzcv));
+}
+
+template<>
+void EmitIR<IR::Opcode::A32TerminalNZCV>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    if (args[0].IsImmediate() || args[0].CurrentLocationKind() != HostLoc::Kind::Flags) {
+        auto Wnzcv = ctx.reg_alloc.ReadW(args[0]);
+        RegAlloc::Realize(Wnzcv);
+        code.MSR(oaknut::SystemReg::NZCV, Wnzcv->toX());
+    }
+    // Nothing between the last IR instruction and the terminal touches the flags.
+    ctx.terminal_nzcv_in_host = true;
+}
+
+template<>
+void EmitIR<IR::Opcode::A32TerminalCheckBit>(oaknut::CodeGenerator&, EmitContext& ctx, IR::Inst* inst) {
+    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    auto Wbit = ctx.reg_alloc.ReadW(args[0]);
+    RegAlloc::Realize(Wbit);
+    // Last instruction of the block: no allocation reuses the register before the terminal.
+    ctx.terminal_check_bit_reg = Wbit->index();
 }
 
 template<>
@@ -399,6 +454,12 @@ void EmitIR<IR::Opcode::A32SetCpsr>(oaknut::CodeGenerator& code, EmitContext& ct
 template<>
 void EmitIR<IR::Opcode::A32SetCpsrNZCV>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    if (ctx.conf.host_flag_forwarding && !args[0].IsImmediate() && args[0].CurrentLocationKind() == HostLoc::Kind::Flags) {
+        // Leave the value in the host flags (for A32TerminalNZCV).
+        code.MRS(Xscratch0, oaknut::SystemReg::NZCV);
+        code.STR(Wscratch0, Xstate, offsetof(A32JitState, cpsr_nzcv));
+        return;
+    }
     auto Wnzcv = ctx.reg_alloc.ReadW(args[0]);
     RegAlloc::Realize(Wnzcv);
 
@@ -698,6 +759,12 @@ void EmitIR<IR::Opcode::A32GetFpscrNZCV>(oaknut::CodeGenerator& code, EmitContex
 template<>
 void EmitIR<IR::Opcode::A32SetFpscrNZCV>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    if (ctx.conf.host_flag_forwarding && !args[0].IsImmediate() && args[0].CurrentLocationKind() == HostLoc::Kind::Flags) {
+        // Leave the value in the host flags (VMRS APSR_nzcv forwarding).
+        code.MRS(Xscratch0, oaknut::SystemReg::NZCV);
+        code.STR(Wscratch0, Xstate, offsetof(A32JitState, fpsr_nzcv));
+        return;
+    }
     auto Wnzcv = ctx.reg_alloc.ReadW(args[0]);
     RegAlloc::Realize(Wnzcv);
 

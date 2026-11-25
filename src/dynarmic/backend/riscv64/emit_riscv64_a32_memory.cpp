@@ -102,4 +102,50 @@ void EmitIR<IR::Opcode::A32ExclusiveWriteMemory64>(biscuit::Assembler&, EmitCont
     UNIMPLEMENTED();
 }
 
+// Opcodes only generated for the arm64 backend (MemoryRangeFusion, HostFlagForwarding).
+template<>
+void EmitIR<IR::Opcode::A32GetCpsrNZCV>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    UNIMPLEMENTED();
+}
+
+template<>
+void EmitIR<IR::Opcode::A32TerminalNZCV>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    UNIMPLEMENTED();
+}
+
+template<>
+void EmitIR<IR::Opcode::A32TerminalCheckBit>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    UNIMPLEMENTED();
+}
+
+template<>
+void EmitIR<IR::Opcode::A32PageRangeLookupRead>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    UNIMPLEMENTED();
+}
+
+template<>
+void EmitIR<IR::Opcode::A32PageRangeLookupWrite>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    UNIMPLEMENTED();
+}
+
+template<>
+void EmitIR<IR::Opcode::A32ReadMemoryHosted32>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    UNIMPLEMENTED();
+}
+
+template<>
+void EmitIR<IR::Opcode::A32ReadMemoryHosted64>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    UNIMPLEMENTED();
+}
+
+template<>
+void EmitIR<IR::Opcode::A32WriteMemoryHosted32>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    UNIMPLEMENTED();
+}
+
+template<>
+void EmitIR<IR::Opcode::A32WriteMemoryHosted64>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    UNIMPLEMENTED();
+}
+
 }  // namespace Dynarmic::Backend::RV64

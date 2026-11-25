@@ -32,6 +32,30 @@ enum class OptimizationFlag : std::uint32_t {
     ConstProp = 0x00000010,
     /// This is enables miscellaneous safe IR optimizations.
     MiscIROpt = 0x00000020,
+    /// A32 with page tables (arm64 backend): instructions that access a known run of
+    /// memory (LDM/STM, PUSH/POP, VLDM/VSTM, VPUSH/VPOP, VLD1/VST1) do one page-table
+    /// lookup for the whole run. Falls back to the per-access path at page boundaries.
+    /// This is a safe optimization.
+    MemoryRangeFusion = 0x00000040,
+    /// A32: 64-bit VFP/NEON loads and stores (VLDR/VSTR/VLDM/VSTM/VPUSH/VPOP Dn, VLD1/VST1)
+    /// use one 64-bit memory access per D register instead of 32-bit or per-element ones
+    /// (little-endian only), and get/set elimination forwards values between the S, D and
+    /// Q views of the extension registers. As with LDRD/STRD, a D register that crosses
+    /// into a faulting page reaches the callbacks as one 64-bit access (so its first word is
+    /// not stored separately). With page tables the wide accesses are only used when
+    /// detect_misaligned_access_via_page_table includes 64. This is a safe optimization.
+    WideVectorMemory = 0x00000080,
+    /// A32 with page tables (arm64 backend): LDREX/STREX run inline against the page tables
+    /// instead of calling out to the global exclusive monitor (see
+    /// ExclusiveMonitor::InlineReservationTable). All JITs sharing a global_monitor must use
+    /// the same setting. This is a safe optimization.
+    InlineExclusiveMemory = 0x00000100,
+    /// A32 (arm64 backend): conditional terminals, conditional block entries reached through
+    /// a block link, VMRS APSR_nzcv and Thumb CBZ/CBNZ use values still in host registers
+    /// (the host NZCV, a register) instead of storing and reloading them. Like get/set
+    /// elimination, this assumes memory callbacks do not change the guest CPSR. This is a
+    /// safe optimization.
+    HostFlagForwarding = 0x00000200,
 
     /// This is an UNSAFE optimization that reduces accuracy of fused multiply-add operations.
     /// This unfuses fused instructions to improve performance on host CPUs without FMA support.

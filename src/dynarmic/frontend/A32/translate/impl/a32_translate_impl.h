@@ -24,7 +24,9 @@ struct TranslatorVisitor final {
     using instruction_return_type = bool;
 
     explicit TranslatorVisitor(IR::Block& block, LocationDescriptor descriptor, const TranslationOptions& options)
-            : ir(block, descriptor, options.arch_version), options(options) {}
+            : ir(block, descriptor, options.arch_version), options(options) {
+        ir.memory_range_fusion = options.memory_range_fusion;
+    }
 
     A32::IREmitter ir;
     ConditionalState cond_state = ConditionalState::None;
@@ -35,6 +37,10 @@ struct TranslatorVisitor final {
     bool ArmConditionPassed(Cond cond);
     bool ThumbConditionPassed();
     bool VFPConditionPassed(Cond cond);
+
+    /// True when a little-endian run of D registers may be moved with one 64-bit memory
+    /// access per register (see TranslationOptions::wide_vector_memory).
+    bool WideVectorMemory() const { return options.wide_vector_memory && !ir.current_location.EFlag(); }
 
     bool InterpretThisInstruction();
     bool UnpredictableInstruction();

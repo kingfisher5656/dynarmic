@@ -29,4 +29,12 @@ void EmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* in
 template<size_t bitsize>
 void EmitExclusiveWriteMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst);
 
+// Memory runs (OptimizationFlag::MemoryRangeFusion), page-table configurations only.
+template<bool is_write>
+void EmitPageRangeLookup(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst);
+template<size_t bitsize>
+void EmitReadMemoryHosted(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst);
+template<size_t bitsize>
+void EmitWriteMemoryHosted(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst);
+
 }  // namespace Dynarmic::Backend::Arm64

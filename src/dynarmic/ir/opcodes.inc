@@ -9,6 +9,13 @@ OPCODE(CallHostFunction,                                    Void,           U64,
 
 // A32 Context getters/setters
 A32OPC(SetCheckBit,                                         Void,           U1                                                              )
+// HostFlagForwarding (A32TerminalFlagsPass): GetCpsrNZCV reads the guest NZCV, which a
+// conditional block finds in the host flags at entry. TerminalNZCV(x) states that x is the
+// guest NZCV the terminal sees (the backend leaves it in the host flags), TerminalCheckBit(b)
+// that b is the check bit for a CheckBit terminal (kept in a register instead of the stack).
+A32OPC(GetCpsrNZCV,                                         NZCV,                                                                           )
+A32OPC(TerminalNZCV,                                        Void,           NZCV                                                            )
+A32OPC(TerminalCheckBit,                                    Void,           U1                                                              )
 A32OPC(GetRegister,                                         U32,            A32Reg                                                          )
 A32OPC(GetExtendedRegister32,                               U32,            A32ExtReg                                                       )
 A32OPC(GetExtendedRegister64,                               U64,            A32ExtReg                                                       )
@@ -734,6 +741,17 @@ A32OPC(ExclusiveWriteMemory8,                               U32,            U64,
 A32OPC(ExclusiveWriteMemory16,                              U32,            U64,            U32,            U16,            AccType         )
 A32OPC(ExclusiveWriteMemory32,                              U32,            U64,            U32,            U32,            AccType         )
 A32OPC(ExclusiveWriteMemory64,                              U32,            U64,            U32,            U64,            AccType         )
+// Memory runs (OptimizationFlag::MemoryRangeFusion): PageRangeLookup* returns the host
+// address of guest address arg0, or 0 unless [arg0, arg0 + arg1) lies inside one page that
+// the read (or write) page table maps. *MemoryHosted* then access guest address arg1 + arg2
+// at host address arg0 + arg2, or take the ordinary path for that address when arg0 is 0.
+// arg3 of ReadMemoryHosted* asks for the result in a vector register.
+A32OPC(PageRangeLookupRead,                                 U64,            U32,            U32                                             )
+A32OPC(PageRangeLookupWrite,                                U64,            U32,            U32                                             )
+A32OPC(ReadMemoryHosted32,                                  U32,            U64,            U32,            U32,            U1              )
+A32OPC(ReadMemoryHosted64,                                  U64,            U64,            U32,            U32,            U1              )
+A32OPC(WriteMemoryHosted32,                                 Void,           U64,            U32,            U32,            U32             )
+A32OPC(WriteMemoryHosted64,                                 Void,           U64,            U32,            U32,            U64             )
 
 // A64 Memory access
 A64OPC(ClearExclusive,                                      Void,                                                                           )

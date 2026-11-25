@@ -65,6 +65,8 @@ bool Inst::IsSharedMemoryRead() const {
     case Opcode::A32ReadMemory16:
     case Opcode::A32ReadMemory32:
     case Opcode::A32ReadMemory64:
+    case Opcode::A32ReadMemoryHosted32:
+    case Opcode::A32ReadMemoryHosted64:
     case Opcode::A64ReadMemory8:
     case Opcode::A64ReadMemory16:
     case Opcode::A64ReadMemory32:
@@ -83,6 +85,8 @@ bool Inst::IsSharedMemoryWrite() const {
     case Opcode::A32WriteMemory16:
     case Opcode::A32WriteMemory32:
     case Opcode::A32WriteMemory64:
+    case Opcode::A32WriteMemoryHosted32:
+    case Opcode::A32WriteMemoryHosted64:
     case Opcode::A64WriteMemory8:
     case Opcode::A64WriteMemory16:
     case Opcode::A64WriteMemory32:
@@ -154,6 +158,7 @@ bool Inst::IsMemoryReadOrWrite() const {
 bool Inst::ReadsFromCPSR() const {
     switch (op) {
     case Opcode::A32GetCpsr:
+    case Opcode::A32GetCpsrNZCV:
     case Opcode::A32GetCFlag:
     case Opcode::A32GetGEFlags:
     case Opcode::A32UpdateUpperLocationDescriptor:
@@ -543,6 +548,8 @@ bool Inst::IsSetCheckBitOperation() const {
 
 bool Inst::MayHaveSideEffects() const {
     return op == Opcode::PushRSB
+        || op == Opcode::A32TerminalNZCV
+        || op == Opcode::A32TerminalCheckBit
         || op == Opcode::CallHostFunction
         || op == Opcode::A64DataCacheOperationRaised
         || op == Opcode::A64InstructionCacheOperationRaised

@@ -33,6 +33,10 @@ public:
 
     LocationDescriptor current_location;
 
+    /// Lets runs of memory accesses share one page-table lookup
+    /// (TranslationOptions::memory_range_fusion).
+    bool memory_range_fusion = false;
+
     size_t ArchVersion() const;
 
     u32 PC() const;
@@ -60,6 +64,9 @@ public:
     void SetCpsrNZCVRaw(const IR::U32& value);
     void SetCpsrNZCVQ(const IR::U32& value);
     void SetCheckBit(const IR::U1& value);
+    IR::NZCV GetCpsrNZCV();
+    void TerminalNZCV(const IR::NZCV& value);
+    void TerminalCheckBit(const IR::U1& value);
     IR::U1 GetOverflowFrom(const IR::Value& value);
     IR::U1 GetCFlag();
     void OrQFlag(const IR::U1& value);
@@ -100,6 +107,20 @@ public:
     IR::U32 ExclusiveWriteMemory32(const IR::U32& vaddr, const IR::U32& value, IR::AccType acc_type);
     IR::U32 ExclusiveWriteMemory64(const IR::U32& vaddr, const IR::U32& value_lo, const IR::U32& value_hi, IR::AccType acc_type);
 
+    /// A run of access_count non-ordered memory accesses inside [start, start + size), e.g.
+    /// the words of an LDM/STM or the registers of a VLDM/VSTM. With memory_range_fusion
+    /// (little-endian, two or more accesses), the whole run is checked against the page table
+    /// once; otherwise every access is an ordinary ReadMemory/WriteMemory of start + offset.
+    struct MemoryRun {
+        IR::U32 start;
+        IR::Value host;  // PageRangeLookup* result when the run is fused, empty otherwise
+    };
+    MemoryRun BeginMemoryRun(const IR::U32& start, size_t size, bool is_write, size_t access_count);
+    IR::U32 ReadMemoryRun32(const MemoryRun& run, u32 offset, IR::AccType acc_type, bool to_vector_register = false);
+    IR::U64 ReadMemoryRun64(const MemoryRun& run, u32 offset, IR::AccType acc_type, bool to_vector_register = false);
+    void WriteMemoryRun32(const MemoryRun& run, u32 offset, const IR::U32& value, IR::AccType acc_type);
+    void WriteMemoryRun64(const MemoryRun& run, u32 offset, const IR::U64& value, IR::AccType acc_type);
+
     void CoprocInternalOperation(size_t coproc_no, bool two, size_t opc1, CoprocReg CRd, CoprocReg CRn, CoprocReg CRm, size_t opc2);
     void CoprocSendOneWord(size_t coproc_no, bool two, size_t opc1, CoprocReg CRn, CoprocReg CRm, size_t opc2, const IR::U32& word);
     void CoprocSendTwoWords(size_t coproc_no, bool two, size_t opc, CoprocReg CRm, const IR::U32& word1, const IR::U32& word2);
@@ -109,6 +130,8 @@ public:
     void CoprocStoreWords(size_t coproc_no, bool two, bool long_transfer, CoprocReg CRd, const IR::U32& address, bool has_option, u8 option);
 
 private:
+    IR::U32 RunAddress(const MemoryRun& run, u32 offset);
+
     enum ArchVersion arch_version;
     IR::U64 ImmCurrentLocationDescriptor();
 };

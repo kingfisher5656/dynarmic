@@ -285,6 +285,24 @@ public:
     void SpillFlags();
     void SpillAll();
 
+    /// A general-purpose register the instruction being emitted may use as a temporary.
+    /// Take it after realizing the instruction's operands; it is released when the
+    /// ScratchGpr goes away (before the instruction's emitter returns).
+    class ScratchGpr final {
+    public:
+        explicit ScratchGpr(RegAlloc& reg_alloc);
+        ~ScratchGpr();
+        ScratchGpr(const ScratchGpr&) = delete;
+        ScratchGpr& operator=(const ScratchGpr&) = delete;
+
+        oaknut::XReg X() const { return oaknut::XReg{index}; }
+        oaknut::WReg W() const { return oaknut::WReg{index}; }
+
+    private:
+        RegAlloc& reg_alloc;
+        int index;
+    };
+
     template<typename... Ts>
     static void Realize(Ts&... rs) {
         static_assert((mcl::is_instance_of_template<RAReg, Ts>() && ...));

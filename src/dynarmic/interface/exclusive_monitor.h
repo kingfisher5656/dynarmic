@@ -12,6 +12,8 @@
 #include <cstring>
 #include <vector>
 
+#include <memory>
+
 #include <dynarmic/common/spin_lock.h>
 
 namespace Dynarmic {
@@ -67,6 +69,24 @@ public:
     /// Unmark processor id
     void ClearProcessor(size_t processor_id);
 
+    /// Reservation versions for exclusive accesses that the arm64 JIT runs inline
+    /// (OptimizationFlag::InlineExclusiveMemory) instead of through this monitor.
+    /// Word InlineReservationIndex(a) covers every address hashing there: bit 0 is held
+    /// while an exclusive store to such an address is in progress, and the remaining bits
+    /// count the successful exclusive stores. A store-exclusive succeeds only if the word
+    /// still holds the value its load-exclusive saw, so (as with this monitor) another
+    /// processor's exclusive store in between makes it fail, even if it restored the value.
+    ///
+    /// The two schemes do not see each other: every JIT sharing a monitor must use the same
+    /// InlineExclusiveMemory setting. Clear() and ClearProcessor() only reset this monitor's
+    /// own reservations; clear an inline reservation with Jit::ClearExclusiveState().
+    using InlineReservationWord = std::atomic<std::uint64_t>;
+    static constexpr size_t INLINE_RESERVATION_TABLE_BITS = 12;
+    static constexpr size_t InlineReservationIndex(std::uint32_t vaddr) {
+        return (vaddr >> 3) & ((size_t{1} << INLINE_RESERVATION_TABLE_BITS) - 1);
+    }
+    InlineReservationWord* InlineReservationTable() { return inline_reservations.get(); }
+
 private:
     bool CheckAndClear(size_t processor_id, VAddr address);
 
@@ -83,6 +103,7 @@ private:
     SpinLock lock;
     std::vector<VAddr> exclusive_addresses;
     std::vector<Vector> exclusive_values;
+    std::unique_ptr<InlineReservationWord[]> inline_reservations;
 };
 
 }  // namespace Dynarmic

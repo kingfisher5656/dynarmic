@@ -278,6 +278,30 @@ void AddressSpace::Link(EmittedBlockInfo& block_info) {
         case LinkTarget::ExclusiveWriteMemory128:
             c.BL(prelude_info.exclusive_write_memory_128);
             break;
+        case LinkTarget::InlineExclusiveReadFallback8:
+            c.BL(prelude_info.inline_exclusive_read_fallback_8);
+            break;
+        case LinkTarget::InlineExclusiveReadFallback16:
+            c.BL(prelude_info.inline_exclusive_read_fallback_16);
+            break;
+        case LinkTarget::InlineExclusiveReadFallback32:
+            c.BL(prelude_info.inline_exclusive_read_fallback_32);
+            break;
+        case LinkTarget::InlineExclusiveReadFallback64:
+            c.BL(prelude_info.inline_exclusive_read_fallback_64);
+            break;
+        case LinkTarget::InlineExclusiveWriteFallback8:
+            c.BL(prelude_info.inline_exclusive_write_fallback_8);
+            break;
+        case LinkTarget::InlineExclusiveWriteFallback16:
+            c.BL(prelude_info.inline_exclusive_write_fallback_16);
+            break;
+        case LinkTarget::InlineExclusiveWriteFallback32:
+            c.BL(prelude_info.inline_exclusive_write_fallback_32);
+            break;
+        case LinkTarget::InlineExclusiveWriteFallback64:
+            c.BL(prelude_info.inline_exclusive_write_fallback_64);
+            break;
         case LinkTarget::CallSVC:
             c.BL(prelude_info.call_svc);
             break;
@@ -334,6 +358,15 @@ void AddressSpace::LinkBlockLinks(const CodePtr entry_point, const CodePtr targe
                 c.ADRL(Xscratch1, (void*)target_ptr);
             } else {
                 c.ADRL(Xscratch1, prelude_info.return_to_dispatcher);
+            }
+            break;
+        case BlockRelocationType::BranchFlagsValid:
+            if (target_ptr) {
+                const auto target_info = block_infos.find(target_ptr);
+                ASSERT(target_info != block_infos.end());
+                c.B((void*)(target_ptr + target_info->second.flags_entry_offset));
+            } else {
+                c.NOP();
             }
             break;
         default:

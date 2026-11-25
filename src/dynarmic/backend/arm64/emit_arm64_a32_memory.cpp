@@ -104,4 +104,34 @@ void EmitIR<IR::Opcode::A32ExclusiveWriteMemory64>(oaknut::CodeGenerator& code, 
     EmitExclusiveWriteMemory<64>(code, ctx, inst);
 }
 
+template<>
+void EmitIR<IR::Opcode::A32PageRangeLookupRead>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitPageRangeLookup<false>(code, ctx, inst);
+}
+
+template<>
+void EmitIR<IR::Opcode::A32PageRangeLookupWrite>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitPageRangeLookup<true>(code, ctx, inst);
+}
+
+template<>
+void EmitIR<IR::Opcode::A32ReadMemoryHosted32>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitReadMemoryHosted<32>(code, ctx, inst);
+}
+
+template<>
+void EmitIR<IR::Opcode::A32ReadMemoryHosted64>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitReadMemoryHosted<64>(code, ctx, inst);
+}
+
+template<>
+void EmitIR<IR::Opcode::A32WriteMemoryHosted32>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitWriteMemoryHosted<32>(code, ctx, inst);
+}
+
+template<>
+void EmitIR<IR::Opcode::A32WriteMemoryHosted64>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    EmitWriteMemoryHosted<64>(code, ctx, inst);
+}
+
 }  // namespace Dynarmic::Backend::Arm64

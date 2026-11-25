@@ -200,7 +200,7 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const E
 
     FpsrManager fpsr_manager{code, conf.state_fpsr_offset, conf.HasOptimization(OptimizationFlag::Unsafe_IgnoreFPExceptionFlags)};
     RegAlloc reg_alloc{code, fpsr_manager, GPR_ORDER, FPR_ORDER};
-    EmitContext ctx{block, reg_alloc, conf, ebi, fpsr_manager, fastmem_manager, {}};
+    EmitContext ctx{block, reg_alloc, conf, ebi, fpsr_manager, fastmem_manager, {}, false, false, false, std::nullopt};
 
     ebi.entry_point = code.xptr<CodePtr>();
 
@@ -210,11 +210,17 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const E
         ASSERT(ctx.block.HasConditionFailedLocation());
         oaknut::Label pass;
 
+        ctx.recording_flags_entry = conf.host_flag_forwarding;
         pass = conf.emit_cond(code, ctx, ctx.block.GetCondition());
+        ctx.recording_flags_entry = false;
         EmitAddCycles(code, ctx, ctx.block.ConditionFailedCycleCount());
+        // The condition check just put the guest flags in the host flags.
+        ctx.terminal_nzcv_in_host = conf.host_flag_forwarding;
         conf.emit_condition_failed_terminal(code, ctx);
+        ctx.terminal_nzcv_in_host = false;
 
         code.l(pass);
+        ctx.entry_nzcv_in_host = conf.host_flag_forwarding;
     }
 
     for (auto iter = block.begin(); iter != block.end(); ++iter) {
@@ -244,6 +250,7 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const E
 
         reg_alloc.UpdateAllUses();
         reg_alloc.AssertAllUnlocked();
+        ctx.entry_nzcv_in_host = false;
 
         if (conf.very_verbose_debugging_output) {
             EmitVerboseDebuggingOutput(code, ctx);
@@ -276,6 +283,7 @@ void EmitBlockLinkRelocation(oaknut::CodeGenerator& code, EmitContext& ctx, cons
     ctx.ebi.block_relocations[descriptor].emplace_back(BlockRelocation{code.xptr<CodePtr>() - ctx.ebi.entry_point, type});
     switch (type) {
     case BlockRelocationType::Branch:
+    case BlockRelocationType::BranchFlagsValid:
         code.NOP();
         break;
     case BlockRelocationType::MoveToScratch1:

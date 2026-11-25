@@ -256,4 +256,41 @@ void A32EmitX64::EmitCheckMemoryAbort(A32EmitContext& ctx, IR::Inst* inst, Xbyak
     code.L(skip);
 }
 
+// Opcodes only generated for the arm64 backend (MemoryRangeFusion, HostFlagForwarding).
+void A32EmitX64::EmitA32GetCpsrNZCV(A32EmitContext&, IR::Inst*) {
+    ASSERT_FALSE("A32GetCpsrNZCV is only generated for the arm64 backend");
+}
+
+void A32EmitX64::EmitA32TerminalNZCV(A32EmitContext&, IR::Inst*) {
+    ASSERT_FALSE("A32TerminalNZCV is only generated for the arm64 backend");
+}
+
+void A32EmitX64::EmitA32TerminalCheckBit(A32EmitContext&, IR::Inst*) {
+    ASSERT_FALSE("A32TerminalCheckBit is only generated for the arm64 backend");
+}
+
+void A32EmitX64::EmitA32PageRangeLookupRead(A32EmitContext&, IR::Inst*) {
+    ASSERT_FALSE("A32PageRangeLookupRead is only generated for the arm64 backend");
+}
+
+void A32EmitX64::EmitA32PageRangeLookupWrite(A32EmitContext&, IR::Inst*) {
+    ASSERT_FALSE("A32PageRangeLookupWrite is only generated for the arm64 backend");
+}
+
+void A32EmitX64::EmitA32ReadMemoryHosted32(A32EmitContext&, IR::Inst*) {
+    ASSERT_FALSE("A32ReadMemoryHosted32 is only generated for the arm64 backend");
+}
+
+void A32EmitX64::EmitA32ReadMemoryHosted64(A32EmitContext&, IR::Inst*) {
+    ASSERT_FALSE("A32ReadMemoryHosted64 is only generated for the arm64 backend");
+}
+
+void A32EmitX64::EmitA32WriteMemoryHosted32(A32EmitContext&, IR::Inst*) {
+    ASSERT_FALSE("A32WriteMemoryHosted32 is only generated for the arm64 backend");
+}
+
+void A32EmitX64::EmitA32WriteMemoryHosted64(A32EmitContext&, IR::Inst*) {
+    ASSERT_FALSE("A32WriteMemoryHosted64 is only generated for the arm64 backend");
+}
+
 }  // namespace Dynarmic::Backend::X64

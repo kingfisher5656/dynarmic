@@ -13,11 +13,13 @@ static bool ITBlockCheck(const A32::IREmitter& ir) {
 }
 
 static bool LDMHelper(A32::IREmitter& ir, bool W, Reg n, u32 list, const IR::U32& start_address, const IR::U32& writeback_address) {
-    auto address = start_address;
+    const size_t count = mcl::bit::count_ones(list);
+    const auto run = ir.BeginMemoryRun(start_address, 4 * count, false, count);
+    u32 offset = 0;
     for (size_t i = 0; i <= 14; i++) {
         if (mcl::bit::get_bit(i, list)) {
-            ir.SetRegister(static_cast<Reg>(i), ir.ReadMemory32(address, IR::AccType::ATOMIC));
-            address = ir.Add(address, ir.Imm32(4));
+            ir.SetRegister(static_cast<Reg>(i), ir.ReadMemoryRun32(run, offset, IR::AccType::ATOMIC));
+            offset += 4;
         }
     }
     if (W && !mcl::bit::get_bit(RegNumber(n), list)) {
@@ -25,7 +27,7 @@ static bool LDMHelper(A32::IREmitter& ir, bool W, Reg n, u32 list, const IR::U32
     }
     if (mcl::bit::get_bit<15>(list)) {
         ir.UpdateUpperLocationDescriptor();
-        ir.LoadWritePC(ir.ReadMemory32(address, IR::AccType::ATOMIC));
+        ir.LoadWritePC(ir.ReadMemoryRun32(run, offset, IR::AccType::ATOMIC));
         if (n == Reg::R13) {
             ir.SetTerm(IR::Term::PopRSBHint{});
         } else {
@@ -37,11 +39,13 @@ static bool LDMHelper(A32::IREmitter& ir, bool W, Reg n, u32 list, const IR::U32
 }
 
 static bool STMHelper(A32::IREmitter& ir, bool W, Reg n, u32 list, const IR::U32& start_address, const IR::U32& writeback_address) {
-    auto address = start_address;
+    const size_t count = mcl::bit::count_ones(list);
+    const auto run = ir.BeginMemoryRun(start_address, 4 * count, true, count);
+    u32 offset = 0;
     for (size_t i = 0; i <= 14; i++) {
         if (mcl::bit::get_bit(i, list)) {
-            ir.WriteMemory32(address, ir.GetRegister(static_cast<Reg>(i)), IR::AccType::ATOMIC);
-            address = ir.Add(address, ir.Imm32(4));
+            ir.WriteMemoryRun32(run, offset, ir.GetRegister(static_cast<Reg>(i)), IR::AccType::ATOMIC);
+            offset += 4;
         }
     }
     if (W) {

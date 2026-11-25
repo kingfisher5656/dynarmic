@@ -29,6 +29,15 @@ struct TranslationOptions {
     /// If this is false, we treat the instruction as a NOP.
     /// If this is true, we emit an ExceptionRaised instruction.
     bool hook_hint_instructions = true;
+
+    /// Little-endian 64-bit VFP/NEON loads and stores (VLDR/VSTR/VLDM/VSTM/VPUSH/VPOP of
+    /// D registers, VLD1/VST1) use one 64-bit memory access per D register.
+    bool wide_vector_memory = false;
+
+    /// Runs of memory accesses with a known extent (LDM/STM, PUSH/POP, VLDM/VSTM,
+    /// VPUSH/VPOP, VLD1/VST1) share one page-table lookup. The backend must support the
+    /// A32PageRangeLookup* and A32*MemoryHosted* opcodes.
+    bool memory_range_fusion = false;
 };
 
 /**

@@ -468,32 +468,48 @@ void RegAlloc::SpillFpr(int index) {
 void RegAlloc::ReadWriteFlags(Argument& read, IR::Inst* write) {
     defined_insts.insert(write);
 
-    const auto current_location = ValueLocation(read.value.GetInst());
+    auto current_location = ValueLocation(read.value.GetInst());
     ASSERT(current_location);
 
     if (current_location->kind == HostLoc::Kind::Flags) {
         if (!flags.IsOneRemainingUse()) {
             SpillFlags();
         }
-    } else if (current_location->kind == HostLoc::Kind::Gpr) {
-        if (!flags.values.empty()) {
-            SpillFlags();
-        }
-        code.MSR(oaknut::SystemReg::NZCV, oaknut::XReg{current_location->index});
-    } else if (current_location->kind == HostLoc::Kind::Spill) {
-        if (!flags.values.empty()) {
-            SpillFlags();
-        }
-        code.LDR(Wscratch0, SP, spill_offset + current_location->index * spill_slot_size);
-        code.MSR(oaknut::SystemReg::NZCV, Xscratch0);
     } else {
-        ASSERT_FALSE("Invalid current location for flags");
+        if (!flags.values.empty()) {
+            // Spilling the flags takes a GPR. Keep the one holding the value to read from
+            // being picked (and overwritten by the MRS).
+            HostLocInfo& read_info = ValueInfo(read.value.GetInst());
+            read_info.locked++;
+            SpillFlags();
+            read_info.locked--;
+            current_location = ValueLocation(read.value.GetInst());
+            ASSERT(current_location);
+        }
+        if (current_location->kind == HostLoc::Kind::Gpr) {
+            code.MSR(oaknut::SystemReg::NZCV, oaknut::XReg{current_location->index});
+        } else if (current_location->kind == HostLoc::Kind::Spill) {
+            code.LDR(Wscratch0, SP, spill_offset + current_location->index * spill_slot_size);
+            code.MSR(oaknut::SystemReg::NZCV, Xscratch0);
+        } else {
+            ASSERT_FALSE("Invalid current location for flags");
+        }
     }
 
     if (write) {
         flags.SetupLocation(write);
         flags.realized = false;
     }
+}
+
+RegAlloc::ScratchGpr::ScratchGpr(RegAlloc& reg_alloc)
+        : reg_alloc{reg_alloc}, index{reg_alloc.AllocateRegister(reg_alloc.gprs, reg_alloc.gpr_order)} {
+    reg_alloc.SpillGpr(index);
+    reg_alloc.gprs[index].SetupScratchLocation();
+}
+
+RegAlloc::ScratchGpr::~ScratchGpr() {
+    reg_alloc.gprs[index].realized = false;
 }
 
 void RegAlloc::SpillFlags() {

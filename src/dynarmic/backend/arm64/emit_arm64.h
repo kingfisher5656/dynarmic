@@ -73,6 +73,14 @@ enum class LinkTarget {
     ExclusiveWriteMemory32,
     ExclusiveWriteMemory64,
     ExclusiveWriteMemory128,
+    InlineExclusiveReadFallback8,
+    InlineExclusiveReadFallback16,
+    InlineExclusiveReadFallback32,
+    InlineExclusiveReadFallback64,
+    InlineExclusiveWriteFallback8,
+    InlineExclusiveWriteFallback16,
+    InlineExclusiveWriteFallback32,
+    InlineExclusiveWriteFallback64,
     CallSVC,
     ExceptionRaised,
     InstructionSynchronizationBarrierRaised,
@@ -91,6 +99,8 @@ struct Relocation {
 enum class BlockRelocationType {
     Branch,
     MoveToScratch1,
+    // Branch to the target's flags_entry_offset: the host NZCV holds the guest NZCV here.
+    BranchFlagsValid,
 };
 
 struct BlockRelocation {
@@ -100,6 +110,9 @@ struct BlockRelocation {
 
 struct EmittedBlockInfo {
     CodePtr entry_point;
+    // Entry for a block that leaves the guest NZCV in the host flags: past the flag load of
+    // this block's condition check (HostFlagForwarding), or the entry point.
+    std::ptrdiff_t flags_entry_offset = 0;
     size_t size;
     std::vector<Relocation> relocations;
     tsl::robin_map<IR::LocationDescriptor, std::vector<BlockRelocation>> block_relocations;
@@ -158,6 +171,18 @@ struct EmitConfig {
     size_t state_nzcv_offset;
     size_t state_fpsr_offset;
     size_t state_exclusive_state_offset;
+
+    // Inline exclusive accesses (A32, OptimizationFlag::InlineExclusiveMemory)
+    bool inline_exclusive_memory = false;
+    size_t state_exclusive_address_offset = 0;
+    size_t state_exclusive_value_offset = 0;
+    size_t state_exclusive_version_offset = 0;
+
+    // Host CPU features (host_features.h)
+    bool host_has_lse = false;
+
+    // A32 OptimizationFlag::HostFlagForwarding (A32TerminalFlagsPass ran on the IR)
+    bool host_flag_forwarding = false;
 
     // A32 specific
     std::array<std::shared_ptr<A32::Coprocessor>, 16> coprocessors{};

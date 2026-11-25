@@ -145,6 +145,14 @@ protected:
         void* exclusive_write_memory_32;
         void* exclusive_write_memory_64;
         void* exclusive_write_memory_128;
+        void* inline_exclusive_read_fallback_8;
+        void* inline_exclusive_read_fallback_16;
+        void* inline_exclusive_read_fallback_32;
+        void* inline_exclusive_read_fallback_64;
+        void* inline_exclusive_write_fallback_8;
+        void* inline_exclusive_write_fallback_16;
+        void* inline_exclusive_write_fallback_32;
+        void* inline_exclusive_write_fallback_64;
 
         void* call_svc;
         void* exception_raised;

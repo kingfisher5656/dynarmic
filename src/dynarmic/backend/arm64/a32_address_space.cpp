@@ -9,6 +9,7 @@
 #include "dynarmic/backend/arm64/abi.h"
 #include "dynarmic/backend/arm64/devirtualize.h"
 #include "dynarmic/backend/arm64/emit_arm64.h"
+#include "dynarmic/backend/arm64/host_features.h"
 #include "dynarmic/backend/arm64/stack_layout.h"
 #include "dynarmic/common/cast_util.h"
 #include "dynarmic/common/fp/fpcr.h"
@@ -163,6 +164,110 @@ static void* EmitExclusiveWriteCallTrampoline(oaknut::CodeGenerator& code, const
     return target;
 }
 
+// Slow paths of the inline exclusive accesses (emit_arm64_memory.cpp): the same protocol,
+// with the memory callbacks doing the access. Called through a wrapped trampoline that
+// preserves all registers except Xscratch0 (vaddr in, result out) and the flags.
+using InlineExclusiveFallbackContext = A32AddressSpace::InlineExclusiveFallbackContext;
+
+template<typename T>
+static u64 InlineExclusiveReadFallback(const InlineExclusiveFallbackContext& context, A32JitState& state, u32 vaddr) {
+    // A misaligned access can span two reservation words: it reserves both.
+    const auto& word = context.reservations[ExclusiveMonitor::InlineReservationIndex(vaddr)];
+    const auto& last_word = context.reservations[ExclusiveMonitor::InlineReservationIndex(vaddr + sizeof(T) - 1)];
+    const u64 version = word.load(std::memory_order_acquire) & ~u64(1);
+    const u64 last_version = &last_word != &word ? last_word.load(std::memory_order_acquire) & ~u64(1) : 0;
+    T value;
+    if constexpr (sizeof(T) == 1) {
+        value = context.callbacks->MemoryRead8(vaddr);
+    } else if constexpr (sizeof(T) == 2) {
+        value = context.callbacks->MemoryRead16(vaddr);
+    } else if constexpr (sizeof(T) == 4) {
+        value = context.callbacks->MemoryRead32(vaddr);
+    } else {
+        value = context.callbacks->MemoryRead64(vaddr);
+    }
+    state.exclusive_version = version;
+    state.exclusive_next_version = last_version;
+    state.exclusive_value = value;
+    state.exclusive_address = vaddr;
+    state.exclusive_state = 2;
+    return value;
+}
+
+// The inline code has already checked and used up the reservation.
+template<typename T>
+static u64 InlineExclusiveWriteFallback(const InlineExclusiveFallbackContext& context, A32JitState& state, u32 vaddr, u64 value) {
+    auto& word = context.reservations[ExclusiveMonitor::InlineReservationIndex(vaddr)];
+    // A misaligned access can reach into the next word's addresses: check that word's version
+    // too (recorded by InlineExclusiveReadFallback) and lock it, so an inline store-exclusive
+    // there cannot land between the callback's compare and store.
+    auto* const last_word = &context.reservations[ExclusiveMonitor::InlineReservationIndex(vaddr + sizeof(T) - 1)];
+    const bool spans = last_word != &word;
+    u64 version = word.load(std::memory_order_relaxed);
+    u64 last_version = spans ? last_word->load(std::memory_order_relaxed) : 0;
+    // Plain loads first: a stale reservation fails without taking the cache lines.
+    if (((version | last_version) & 1) != 0 || version != state.exclusive_version || (spans && last_version != state.exclusive_next_version)) {
+        return 1;
+    }
+    if (!word.compare_exchange_strong(version, version | 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+        return 1;
+    }
+    if (spans && !last_word->compare_exchange_strong(last_version, last_version | 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+        word.store(version, std::memory_order_release);
+        return 1;
+    }
+    const T expected = static_cast<T>(state.exclusive_value);
+    bool stored;
+    if constexpr (sizeof(T) == 1) {
+        stored = context.callbacks->MemoryWriteExclusive8(vaddr, static_cast<T>(value), expected);
+    } else if constexpr (sizeof(T) == 2) {
+        stored = context.callbacks->MemoryWriteExclusive16(vaddr, static_cast<T>(value), expected);
+    } else if constexpr (sizeof(T) == 4) {
+        stored = context.callbacks->MemoryWriteExclusive32(vaddr, static_cast<T>(value), expected);
+    } else {
+        stored = context.callbacks->MemoryWriteExclusive64(vaddr, static_cast<T>(value), expected);
+    }
+    if (spans) {
+        last_word->store(stored ? last_version + 2 : last_version, std::memory_order_release);
+    }
+    word.store(stored ? version + 2 : version, std::memory_order_release);
+    return stored ? 0 : 1;
+}
+
+// Calls fn(context, jit state, vaddr = Xscratch0, value = Xscratch1), result in Xscratch0.
+template<auto fn>
+static void* EmitInlineExclusiveFallbackTrampoline(oaknut::CodeGenerator& code, const InlineExclusiveFallbackContext* context) {
+    using namespace oaknut::util;
+
+    oaknut::Label l_addr, l_context;
+
+    constexpr u64 save_regs = ABI_CALLER_SAVE & ~ToRegList(Xscratch0);
+
+    void* target = code.xptr<void*>();
+    ABI_PushRegisters(code, save_regs, 16);
+    code.MOV(X2, Xscratch0);
+    code.MOV(X3, Xscratch1);
+    code.MRS(Xscratch1, oaknut::SystemReg::NZCV);
+    code.STR(Xscratch1, SP, 0);
+    code.LDR(X0, l_context);
+    code.MOV(X1, Xstate);
+    code.LDR(Xscratch0, l_addr);
+    code.BLR(Xscratch0);
+    code.MOV(Xscratch0, X0);
+    code.LDR(Xscratch1, SP, 0);
+    code.MSR(oaknut::SystemReg::NZCV, Xscratch1);
+    ABI_PopRegisters(code, save_regs, 16);
+    code.RET();
+
+    code.align(8);
+    code.l(l_context);
+    code.dx(mcl::bit_cast<u64>(context));
+    code.l(l_addr);
+    code.dx(mcl::bit_cast<u64>(fn));
+
+    return target;
+}
+
 A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf)
         : AddressSpace(conf.code_cache_size, conf.fastmem_pointer.has_value())
         , conf(conf) {
@@ -172,20 +277,32 @@ A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf)
 }
 
 IR::Block A32AddressSpace::GenerateIR(IR::LocationDescriptor descriptor) const {
-    IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
+    A32::TranslationOptions options{conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions};
+    // With page tables, a widened 64-bit access that crosses into the next page has to reach
+    // the fallback (as LDRD/STRD already do); otherwise both words would use the first page.
+    const bool page_crossing_64_detected = !conf.page_table || (conf.detect_misaligned_access_via_page_table & 64) != 0;
+    options.wide_vector_memory = conf.HasOptimization(OptimizationFlag::WideVectorMemory) && page_crossing_64_detected;
+    // Fused runs skip the per-access checks: only usable when misaligned accesses need the
+    // callbacks just at page boundaries (which the run's range check covers).
+    const bool strict_alignment_checks = !conf.only_detect_misalignment_via_page_table_on_page_boundary && (conf.detect_misaligned_access_via_page_table & (32 | 64)) != 0;
+    options.memory_range_fusion = conf.HasOptimization(OptimizationFlag::MemoryRangeFusion) && conf.page_table && !conf.fastmem_pointer && !conf.check_halt_on_memory_access && !strict_alignment_checks;
+    IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, options);
 
     Optimization::PolyfillPass(ir_block, {});
     if (conf.fastmem_pointer || conf.very_verbose_debugging_output) {
         Optimization::NamingPass(ir_block);
     }
     if (conf.HasOptimization(OptimizationFlag::GetSetElimination)) {
-        Optimization::A32GetSetElimination(ir_block, {.convert_nzc_to_nz = true});
+        Optimization::A32GetSetElimination(ir_block, {.convert_nzc_to_nz = true, .forward_ext_reg_views = conf.HasOptimization(OptimizationFlag::WideVectorMemory)});
         Optimization::DeadCodeElimination(ir_block);
     }
     if (conf.HasOptimization(OptimizationFlag::ConstProp)) {
         Optimization::A32ConstantMemoryReads(ir_block, conf.callbacks);
         Optimization::ConstantPropagation(ir_block);
         Optimization::DeadCodeElimination(ir_block);
+    }
+    if (conf.HasOptimization(OptimizationFlag::HostFlagForwarding)) {
+        Optimization::A32TerminalFlagsPass(ir_block);
     }
     Optimization::IdentityRemovalPass(ir_block);
     Optimization::VerificationPass(ir_block);
@@ -226,13 +343,24 @@ void A32AddressSpace::EmitPrelude() {
     prelude_info.exclusive_write_memory_16 = EmitExclusiveWriteCallTrampoline<&A32::UserCallbacks::MemoryWriteExclusive16, u16>(code, conf);
     prelude_info.exclusive_write_memory_32 = EmitExclusiveWriteCallTrampoline<&A32::UserCallbacks::MemoryWriteExclusive32, u32>(code, conf);
     prelude_info.exclusive_write_memory_64 = EmitExclusiveWriteCallTrampoline<&A32::UserCallbacks::MemoryWriteExclusive64, u64>(code, conf);
+    if (InlineExclusiveMemory()) {
+        inline_exclusive_context = {conf.callbacks, conf.global_monitor->InlineReservationTable()};
+        prelude_info.inline_exclusive_read_fallback_8 = EmitInlineExclusiveFallbackTrampoline<&InlineExclusiveReadFallback<u8>>(code, &inline_exclusive_context);
+        prelude_info.inline_exclusive_read_fallback_16 = EmitInlineExclusiveFallbackTrampoline<&InlineExclusiveReadFallback<u16>>(code, &inline_exclusive_context);
+        prelude_info.inline_exclusive_read_fallback_32 = EmitInlineExclusiveFallbackTrampoline<&InlineExclusiveReadFallback<u32>>(code, &inline_exclusive_context);
+        prelude_info.inline_exclusive_read_fallback_64 = EmitInlineExclusiveFallbackTrampoline<&InlineExclusiveReadFallback<u64>>(code, &inline_exclusive_context);
+        prelude_info.inline_exclusive_write_fallback_8 = EmitInlineExclusiveFallbackTrampoline<&InlineExclusiveWriteFallback<u8>>(code, &inline_exclusive_context);
+        prelude_info.inline_exclusive_write_fallback_16 = EmitInlineExclusiveFallbackTrampoline<&InlineExclusiveWriteFallback<u16>>(code, &inline_exclusive_context);
+        prelude_info.inline_exclusive_write_fallback_32 = EmitInlineExclusiveFallbackTrampoline<&InlineExclusiveWriteFallback<u32>>(code, &inline_exclusive_context);
+        prelude_info.inline_exclusive_write_fallback_64 = EmitInlineExclusiveFallbackTrampoline<&InlineExclusiveWriteFallback<u64>>(code, &inline_exclusive_context);
+    }
     prelude_info.call_svc = EmitCallTrampoline<&A32::UserCallbacks::CallSVC>(code, conf.callbacks);
     prelude_info.exception_raised = EmitCallTrampoline<&A32::UserCallbacks::ExceptionRaised>(code, conf.callbacks);
     prelude_info.isb_raised = EmitCallTrampoline<&A32::UserCallbacks::InstructionSynchronizationBarrierRaised>(code, conf.callbacks);
     prelude_info.add_ticks = EmitCallTrampoline<&A32::UserCallbacks::AddTicks>(code, conf.callbacks);
     prelude_info.get_ticks_remaining = EmitCallTrampoline<&A32::UserCallbacks::GetTicksRemaining>(code, conf.callbacks);
 
-    oaknut::Label return_from_run_code, l_return_to_dispatcher;
+    oaknut::Label return_from_run_code, l_return_to_dispatcher, l_inline_reservations;
 
     prelude_info.run_code = code.xptr<PreludeInfo::RunCodeFuncType>();
     {
@@ -255,6 +383,11 @@ void A32AddressSpace::EmitPrelude() {
             for (size_t i = 0; i < RSBCount; i++) {
                 code.STR(Xscratch0, SP, offsetof(StackLayout, rsb) + offsetof(RSBEntry, code_ptr) + i * sizeof(RSBEntry));
             }
+        }
+
+        if (InlineExclusiveMemory()) {
+            code.LDR(Xscratch0, l_inline_reservations);
+            code.STR(Xscratch0, SP, offsetof(StackLayout, inline_reservation_table));
         }
 
         if (conf.enable_cycle_counting) {
@@ -302,6 +435,11 @@ void A32AddressSpace::EmitPrelude() {
             for (size_t i = 0; i < RSBCount; i++) {
                 code.STR(Xscratch0, SP, offsetof(StackLayout, rsb) + offsetof(RSBEntry, code_ptr) + i * sizeof(RSBEntry));
             }
+        }
+
+        if (InlineExclusiveMemory()) {
+            code.LDR(Xscratch0, l_inline_reservations);
+            code.STR(Xscratch0, SP, offsetof(StackLayout, inline_reservation_table));
         }
 
         if (conf.enable_cycle_counting) {
@@ -415,11 +553,17 @@ void A32AddressSpace::EmitPrelude() {
     code.align(8);
     code.l(l_return_to_dispatcher);
     code.dx(mcl::bit_cast<u64>(prelude_info.return_to_dispatcher));
+    code.l(l_inline_reservations);
+    code.dx(mcl::bit_cast<u64>(inline_exclusive_context.reservations));
 
     prelude_info.end_of_prelude = code.offset();
 
     mem.invalidate(reinterpret_cast<u32*>(mem.xptr()), prelude_info.end_of_prelude);
     ProtectCodeMemory();
+}
+
+bool A32AddressSpace::InlineExclusiveMemory() const {
+    return conf.HasOptimization(OptimizationFlag::InlineExclusiveMemory) && conf.page_table && !conf.fastmem_pointer && conf.global_monitor;
 }
 
 EmitConfig A32AddressSpace::GetEmitConfig() {
@@ -466,6 +610,15 @@ EmitConfig A32AddressSpace::GetEmitConfig() {
         .state_nzcv_offset = offsetof(A32JitState, cpsr_nzcv),
         .state_fpsr_offset = offsetof(A32JitState, fpsr),
         .state_exclusive_state_offset = offsetof(A32JitState, exclusive_state),
+
+        .inline_exclusive_memory = InlineExclusiveMemory(),
+        .state_exclusive_address_offset = offsetof(A32JitState, exclusive_address),
+        .state_exclusive_value_offset = offsetof(A32JitState, exclusive_value),
+        .state_exclusive_version_offset = offsetof(A32JitState, exclusive_version),
+
+        .host_has_lse = GetHostFeatures().lse,
+
+        .host_flag_forwarding = conf.HasOptimization(OptimizationFlag::HostFlagForwarding),
 
         .coprocessors = conf.coprocessors,
 

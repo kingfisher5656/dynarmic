@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include <oaknut/oaknut.hpp>
@@ -41,6 +42,16 @@ struct EmitContext {
     FastmemManager& fastmem;
 
     std::vector<std::function<void()>> deferred_emits;
+
+    // HostFlagForwarding state (A32):
+    // the block's condition check is being emitted (record flags_entry_offset)
+    bool recording_flags_entry = false;
+    // the host NZCV holds the guest NZCV: at block entry, before the first IR instruction
+    bool entry_nzcv_in_host = false;
+    // ... and while emitting the terminal (set by A32TerminalNZCV)
+    bool terminal_nzcv_in_host = false;
+    // register holding the check bit for a CheckBit terminal (A32TerminalCheckBit)
+    std::optional<int> terminal_check_bit_reg;
 
     FP::FPCR FPCR(bool fpcr_controlled = true) const {
         const FP::FPCR fpcr = conf.descriptor_to_fpcr(block.Location());

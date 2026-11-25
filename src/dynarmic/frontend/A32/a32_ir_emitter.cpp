@@ -154,6 +154,18 @@ void IREmitter::SetCpsrNZCVQ(const IR::U32& value) {
     Inst(Opcode::A32SetCpsrNZCVQ, value);
 }
 
+IR::NZCV IREmitter::GetCpsrNZCV() {
+    return Inst<IR::NZCV>(Opcode::A32GetCpsrNZCV);
+}
+
+void IREmitter::TerminalNZCV(const IR::NZCV& value) {
+    Inst(Opcode::A32TerminalNZCV, value);
+}
+
+void IREmitter::TerminalCheckBit(const IR::U1& value) {
+    Inst(Opcode::A32TerminalCheckBit, value);
+}
+
 void IREmitter::SetCheckBit(const IR::U1& value) {
     Inst(Opcode::A32SetCheckBit, value);
 }
@@ -359,6 +371,62 @@ IR::U32 IREmitter::ExclusiveWriteMemory64(const IR::U32& vaddr, const IR::U32& v
     } else {
         return Inst<IR::U32>(Opcode::A32ExclusiveWriteMemory64, ImmCurrentLocationDescriptor(), vaddr, Pack2x32To1x64(value_lo, value_hi), IR::Value{acc_type});
     }
+}
+
+IREmitter::MemoryRun IREmitter::BeginMemoryRun(const IR::U32& start, size_t size, bool is_write, size_t access_count) {
+    // One lookup only pays off for two or more accesses; big-endian runs keep the
+    // per-access byte swaps of the ordinary path.
+    if (!memory_range_fusion || current_location.EFlag() || access_count < 2 || size > 4096) {
+        return {start, IR::Value{}};
+    }
+    const auto opcode = is_write ? Opcode::A32PageRangeLookupWrite : Opcode::A32PageRangeLookupRead;
+    return {start, Inst<IR::U64>(opcode, start, Imm32(static_cast<u32>(size)))};
+}
+
+IR::U32 IREmitter::RunAddress(const MemoryRun& run, u32 offset) {
+    if (offset == 0) {
+        return run.start;
+    }
+    return Add(run.start, Imm32(offset));
+}
+
+static IR::AccType CheckMemoryRunAccType(IR::AccType acc_type) {
+    ASSERT_MSG(acc_type == IR::AccType::NORMAL || acc_type == IR::AccType::ATOMIC, "memory runs are not ordered");
+    return acc_type;
+}
+
+IR::U32 IREmitter::ReadMemoryRun32(const MemoryRun& run, u32 offset, IR::AccType acc_type, bool to_vector_register) {
+    CheckMemoryRunAccType(acc_type);
+    if (run.host.IsEmpty()) {
+        return ReadMemory32(RunAddress(run, offset), acc_type);
+    }
+    return Inst<IR::U32>(Opcode::A32ReadMemoryHosted32, run.host, run.start, Imm32(offset), Imm1(to_vector_register));
+}
+
+IR::U64 IREmitter::ReadMemoryRun64(const MemoryRun& run, u32 offset, IR::AccType acc_type, bool to_vector_register) {
+    CheckMemoryRunAccType(acc_type);
+    if (run.host.IsEmpty()) {
+        return ReadMemory64(RunAddress(run, offset), acc_type);
+    }
+    return Inst<IR::U64>(Opcode::A32ReadMemoryHosted64, run.host, run.start, Imm32(offset), Imm1(to_vector_register));
+}
+
+void IREmitter::WriteMemoryRun32(const MemoryRun& run, u32 offset, const IR::U32& value, IR::AccType acc_type) {
+    CheckMemoryRunAccType(acc_type);
+    if (run.host.IsEmpty()) {
+        WriteMemory32(RunAddress(run, offset), value, acc_type);
+        return;
+    }
+    Inst(Opcode::A32WriteMemoryHosted32, run.host, run.start, Imm32(offset), value);
+}
+
+void IREmitter::WriteMemoryRun64(const MemoryRun& run, u32 offset, const IR::U64& value, IR::AccType acc_type) {
+    CheckMemoryRunAccType(acc_type);
+    if (run.host.IsEmpty()) {
+        WriteMemory64(RunAddress(run, offset), value, acc_type);
+        return;
+    }
+    Inst(Opcode::A32WriteMemoryHosted64, run.host, run.start, Imm32(offset), value);
 }
 
 void IREmitter::CoprocInternalOperation(size_t coproc_no, bool two, size_t opc1, CoprocReg CRd, CoprocReg CRn, CoprocReg CRm, size_t opc2) {

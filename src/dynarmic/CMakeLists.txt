@@ -181,6 +181,7 @@ if ("A32" IN_LIST DYNARMIC_FRONTENDS)
         interface/A32/disassembler.h
         ir/opt/a32_constant_memory_reads_pass.cpp
         ir/opt/a32_get_set_elimination_pass.cpp
+        ir/opt/a32_terminal_flags_pass.cpp
     )
 endif()
 
@@ -370,6 +371,8 @@ if ("arm64" IN_LIST ARCHITECTURE)
         backend/arm64/exclusive_monitor.cpp
         backend/arm64/fastmem.h
         backend/arm64/fpsr_manager.cpp
+        backend/arm64/host_features.cpp
+        backend/arm64/host_features.h
         backend/arm64/fpsr_manager.h
         backend/arm64/reg_alloc.cpp
         backend/arm64/reg_alloc.h

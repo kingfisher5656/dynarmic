@@ -1356,6 +1356,15 @@ void EmitIR<IR::Opcode::ZeroExtendWordToLong>(oaknut::CodeGenerator&, EmitContex
 template<>
 void EmitIR<IR::Opcode::ZeroExtendLongToQuad>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    if (args[0].IsInFpr()) {
+        // Already in a vector register: writing its D view clears the upper half.
+        auto Dvalue = ctx.reg_alloc.ReadD(args[0]);
+        auto Qresult = ctx.reg_alloc.WriteQ(inst);
+        RegAlloc::Realize(Dvalue, Qresult);
+
+        code.FMOV(Qresult->toD(), Dvalue);
+        return;
+    }
     auto Xvalue = ctx.reg_alloc.ReadX(args[0]);
     auto Qresult = ctx.reg_alloc.WriteQ(inst);
     RegAlloc::Realize(Xvalue, Qresult);

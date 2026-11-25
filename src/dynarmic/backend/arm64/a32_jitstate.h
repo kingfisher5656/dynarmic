@@ -29,7 +29,14 @@ struct A32JitState {
 
     alignas(16) std::array<u32, 64> ext_regs{};
 
+    // 0: no reservation; 1: reservation held by the global ExclusiveMonitor (callback
+    // path); 2: inline reservation (OptimizationFlag::InlineExclusiveMemory) described by
+    // the three fields below.
     u32 exclusive_state = 0;
+    u32 exclusive_address = 0;
+    u64 exclusive_value = 0;  // zero-extended value the load-exclusive read
+    u64 exclusive_version = 0;  // its ExclusiveMonitor::InlineReservationTable() word, unlocked
+    u64 exclusive_next_version = 0;  // the next table word's, if a misaligned access spanned two (slow paths only)
 
     u32 Cpsr() const;
     void SetCpsr(u32 cpsr);

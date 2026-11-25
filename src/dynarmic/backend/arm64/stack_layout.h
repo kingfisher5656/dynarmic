@@ -38,6 +38,9 @@ struct alignas(16) StackLayout {
     u32 save_host_fpcr;
 
     bool check_bit;
+
+    // ExclusiveMonitor::InlineReservationTable(), when inline exclusive accesses are on.
+    u64 inline_reservation_table;
 };
 
 #ifdef _MSC_VER

@@ -741,13 +741,14 @@ bool TranslatorVisitor::thumb16_PUSH(bool M, RegList reg_list) {
 
     const u32 num_bytes_to_push = static_cast<u32>(4 * mcl::bit::count_ones(reg_list));
     const auto final_address = ir.Sub(ir.GetRegister(Reg::SP), ir.Imm32(num_bytes_to_push));
-    auto address = final_address;
+    const auto run = ir.BeginMemoryRun(final_address, num_bytes_to_push, true, num_bytes_to_push / 4);
+    u32 offset = 0;
     for (size_t i = 0; i < 16; i++) {
         if (mcl::bit::get_bit(i, reg_list)) {
             // TODO: Deal with alignment
             const auto Ri = ir.GetRegister(static_cast<Reg>(i));
-            ir.WriteMemory32(address, Ri, IR::AccType::ATOMIC);
-            address = ir.Add(address, ir.Imm32(4));
+            ir.WriteMemoryRun32(run, offset, Ri, IR::AccType::ATOMIC);
+            offset += 4;
         }
     }
 
@@ -765,27 +766,29 @@ bool TranslatorVisitor::thumb16_POP(bool P, RegList reg_list) {
         return UnpredictableInstruction();
     }
 
-    auto address = ir.GetRegister(Reg::SP);
+    const u32 num_bytes_to_pop = static_cast<u32>(4 * mcl::bit::count_ones(reg_list));
+    const auto start_address = ir.GetRegister(Reg::SP);
+    const auto run = ir.BeginMemoryRun(start_address, num_bytes_to_pop, false, num_bytes_to_pop / 4);
+    u32 offset = 0;
     for (size_t i = 0; i < 15; i++) {
         if (mcl::bit::get_bit(i, reg_list)) {
             // TODO: Deal with alignment
-            const auto data = ir.ReadMemory32(address, IR::AccType::ATOMIC);
+            const auto data = ir.ReadMemoryRun32(run, offset, IR::AccType::ATOMIC);
             ir.SetRegister(static_cast<Reg>(i), data);
-            address = ir.Add(address, ir.Imm32(4));
+            offset += 4;
         }
     }
 
     if (mcl::bit::get_bit<15>(reg_list)) {
         // TODO(optimization): Possible location for an RSB pop.
-        const auto data = ir.ReadMemory32(address, IR::AccType::ATOMIC);
+        const auto data = ir.ReadMemoryRun32(run, offset, IR::AccType::ATOMIC);
         ir.UpdateUpperLocationDescriptor();
         ir.LoadWritePC(data);
-        address = ir.Add(address, ir.Imm32(4));
-        ir.SetRegister(Reg::SP, address);
+        ir.SetRegister(Reg::SP, ir.Add(start_address, ir.Imm32(num_bytes_to_pop)));
         ir.SetTerm(IR::Term::PopRSBHint{});
         return false;
     } else {
-        ir.SetRegister(Reg::SP, address);
+        ir.SetRegister(Reg::SP, ir.Add(start_address, ir.Imm32(num_bytes_to_pop)));
         return true;
     }
 }
@@ -855,16 +858,19 @@ bool TranslatorVisitor::thumb16_STMIA(Reg n, RegList reg_list) {
         return UnpredictableInstruction();
     }
 
-    auto address = ir.GetRegister(n);
+    const u32 num_bytes = static_cast<u32>(4 * mcl::bit::count_ones(reg_list));
+    const auto start_address = ir.GetRegister(n);
+    const auto run = ir.BeginMemoryRun(start_address, num_bytes, true, num_bytes / 4);
+    u32 offset = 0;
     for (size_t i = 0; i < 8; i++) {
         if (mcl::bit::get_bit(i, reg_list)) {
             const auto Ri = ir.GetRegister(static_cast<Reg>(i));
-            ir.WriteMemory32(address, Ri, IR::AccType::ATOMIC);
-            address = ir.Add(address, ir.Imm32(4));
+            ir.WriteMemoryRun32(run, offset, Ri, IR::AccType::ATOMIC);
+            offset += 4;
         }
     }
 
-    ir.SetRegister(n, address);
+    ir.SetRegister(n, ir.Add(start_address, ir.Imm32(num_bytes)));
     return true;
 }
 
@@ -875,18 +881,21 @@ bool TranslatorVisitor::thumb16_LDMIA(Reg n, RegList reg_list) {
     }
 
     const bool write_back = !mcl::bit::get_bit(static_cast<size_t>(n), reg_list);
-    auto address = ir.GetRegister(n);
+    const u32 num_bytes = static_cast<u32>(4 * mcl::bit::count_ones(reg_list));
+    const auto start_address = ir.GetRegister(n);
+    const auto run = ir.BeginMemoryRun(start_address, num_bytes, false, num_bytes / 4);
 
+    u32 offset = 0;
     for (size_t i = 0; i < 8; i++) {
         if (mcl::bit::get_bit(i, reg_list)) {
-            const auto data = ir.ReadMemory32(address, IR::AccType::ATOMIC);
+            const auto data = ir.ReadMemoryRun32(run, offset, IR::AccType::ATOMIC);
             ir.SetRegister(static_cast<Reg>(i), data);
-            address = ir.Add(address, ir.Imm32(4));
+            offset += 4;
         }
     }
 
     if (write_back) {
-        ir.SetRegister(n, address);
+        ir.SetRegister(n, ir.Add(start_address, ir.Imm32(num_bytes)));
     }
     return true;
 }
