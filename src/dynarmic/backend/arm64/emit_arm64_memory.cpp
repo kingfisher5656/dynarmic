@@ -421,10 +421,15 @@ CodePtr EmitMemoryStr(oaknut::CodeGenerator& code, int value_idx, oaknut::XReg X
 // leaves the host addresses of the low word in Xscratch0 and of the high word minus 4 in
 // Xscratch1, so the access can be done as two 32-bit ones (which is what the guest's
 // VLDR/VSTR/LDRD/STRD architecturally are). Otherwise branches to `slow` (memory callbacks).
-// Returns false, having emitted nothing, for page-table layouts it does not handle, and when
-// misaligned accesses must reach the callbacks anywhere (not only at page boundaries).
+// Returns false, having emitted nothing, unless OptimizationFlag::WideVectorMemory is on (so
+// turning it off sends page-crossing 64-bit accesses to the callbacks again), for page-table
+// layouts it does not handle, and when misaligned accesses must reach the callbacks anywhere
+// (not only at page boundaries).
 // Trashes NZCV; only used where the 64-bit lookup already does (page-crossing checks).
 bool EmitSplitAccess64(oaknut::CodeGenerator& code, EmitContext& ctx, oaknut::XReg Xaddr, oaknut::Label& slow, oaknut::XReg table) {
+    if (!ctx.conf.HasOptimization(OptimizationFlag::WideVectorMemory)) {
+        return false;
+    }
     if (!ctx.conf.absolute_offset_page_table || !ctx.conf.zero_extend_32bit_page_table_address || !ctx.conf.silently_mirror_page_table || (ctx.conf.detect_misaligned_access_via_page_table & 64) == 0 || !ctx.conf.only_detect_misalignment_via_page_table_on_page_boundary) {
         return false;
     }

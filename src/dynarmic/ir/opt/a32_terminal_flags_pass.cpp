@@ -54,7 +54,7 @@ bool WritesToNZCV(IR::Opcode op) {
 // SetCpsrNZCV(x), dropping the FPSCR store/load round trip.
 void ForwardFpscrNZCV(IR::Block& block, A32::IREmitter& ir) {
     std::optional<IR::Value> fpscr_nzcv;   // argument of the last SetFpscrNZCV
-    const IR::Inst* reader = nullptr;      // a GetFpscrNZCV after it
+    IR::Inst* reader = nullptr;            // a GetFpscrNZCV after it
     for (auto inst = block.begin(); inst != block.end(); ++inst) {
         switch (inst->GetOpcode()) {
         case IR::Opcode::A32SetFpscrNZCV:
@@ -73,6 +73,11 @@ void ForwardFpscrNZCV(IR::Block& block, A32::IREmitter& ir) {
                 ir.SetInsertionPointBefore(inst);
                 ir.SetCpsrNZCV(IR::NZCV{*fpscr_nzcv});
                 inst->Invalidate();
+                // Dead code elimination has already run: drop the now unused FPSCR load.
+                if (!reader->HasUses()) {
+                    reader->Invalidate();
+                    reader = nullptr;
+                }
             }
             break;
         }

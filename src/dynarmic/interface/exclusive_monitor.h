@@ -78,8 +78,10 @@ public:
     /// processor's exclusive store in between makes it fail, even if it restored the value.
     ///
     /// The two schemes do not see each other: every JIT sharing a monitor must use the same
-    /// InlineExclusiveMemory setting. Clear() and ClearProcessor() only reset this monitor's
-    /// own reservations; clear an inline reservation with Jit::ClearExclusiveState().
+    /// one. A JIT uses the inline scheme when InlineExclusiveMemory is on and it has a page
+    /// table and no fastmem, so a JIT with a different memory setup does not interoperate
+    /// even with the same optimization flags. Clear() and ClearProcessor() only reset this
+    /// monitor's own reservations; clear an inline reservation with Jit::ClearExclusiveState().
     using InlineReservationWord = std::atomic<std::uint64_t>;
     static constexpr size_t INLINE_RESERVATION_TABLE_BITS = 12;
     static constexpr size_t InlineReservationIndex(std::uint32_t vaddr) {

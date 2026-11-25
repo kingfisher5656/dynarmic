@@ -43,12 +43,16 @@ enum class OptimizationFlag : std::uint32_t {
     /// Q views of the extension registers. As with LDRD/STRD, a D register that crosses
     /// into a faulting page reaches the callbacks as one 64-bit access (so its first word is
     /// not stored separately). With page tables the wide accesses are only used when
-    /// detect_misaligned_access_via_page_table includes 64. This is a safe optimization.
+    /// detect_misaligned_access_via_page_table includes 64, and (with
+    /// only_detect_misalignment_via_page_table_on_page_boundary) any 4-aligned 64-bit access
+    /// that crosses a page, LDRD/STRD included, is done as two 32-bit page-table accesses
+    /// when both pages are in the table, instead of calling back. This is a safe optimization.
     WideVectorMemory = 0x00000080,
     /// A32 with page tables (arm64 backend): LDREX/STREX run inline against the page tables
     /// instead of calling out to the global exclusive monitor (see
-    /// ExclusiveMonitor::InlineReservationTable). All JITs sharing a global_monitor must use
-    /// the same setting. This is a safe optimization.
+    /// ExclusiveMonitor::InlineReservationTable). All JITs sharing a global_monitor must
+    /// end up using the same scheme: the same setting, and either all with page tables and
+    /// no fastmem (inline) or all without (monitor). This is a safe optimization.
     InlineExclusiveMemory = 0x00000100,
     /// A32 (arm64 backend): conditional terminals, conditional block entries reached through
     /// a block link, VMRS APSR_nzcv and Thumb CBZ/CBNZ use values still in host registers
